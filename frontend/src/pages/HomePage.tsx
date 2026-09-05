@@ -68,9 +68,10 @@ export default function HomePage() {
           )}
 
           <p className="mt-4 text-xs text-slate-400">
-            Phase 2 - authentication and chat/message history now work
-            end-to-end. Document upload and the actual RAG chat/retrieval
-            pipeline land in a later phase.
+            Authentication, chat history, document ingestion, and the RAG
+            chat pipeline all work end-to-end. A group above shows
+            "missing" only if it depends on secrets this deployment hasn't
+            set - sign-up/login/chat/documents work regardless.
           </p>
         </div>
       </div>

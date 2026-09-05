@@ -1,0 +1,8 @@
+# Treat binary fixtures/assets as binary explicitly, so Windows'
+# core.autocrlf=true never attempts (or warns about) EOL conversion on
+# them - matters for backend/tests/fixtures/*.pdf and docs/screenshots/*.png.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

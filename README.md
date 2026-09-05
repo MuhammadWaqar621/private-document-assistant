@@ -7,14 +7,40 @@ retrieval-augmented-generation stack: chunking and embedding documents,
 storing vectors in a purpose-built vector database, and grounding an LLM's
 answers in retrieved context rather than letting it hallucinate freely.
 
-> **Status:** Phase 3 — document ingestion (PDF/DOCX/TXT → chunk → embed →
-> Qdrant) and the actual RAG chat pipeline (retrieve → stream an Azure
-> OpenAI answer back over Server-Sent Events) are implemented on top of
-> the Phase 2 scaffold (auth, chat/message history) and Phase 1 scaffold
-> (FastAPI backend, React frontend, Postgres, and Qdrant wired together via
-> docker-compose). Uploading a document and asking a question about it now
-> works end-to-end. What's still ahead: a full polished end-to-end Docker
-> demo pass with screenshots, and an automated test suite (see Roadmap).
+> **Status:** Feature-complete for its intended scope. Document ingestion
+> (PDF/DOCX/TXT → chunk → embed → Qdrant), the RAG chat pipeline (retrieve
+> → stream an Azure OpenAI answer back over Server-Sent Events),
+> authentication (JWT + Google OAuth + forgot-password), and chat/message
+> history all work end-to-end against the docker-compose stack, backed by
+> an automated test suite (53 tests — see "Running tests" below) covering
+> the multi-tenant isolation boundary, chunking/extraction edge cases, and
+> the API layer's auth/ownership checks. See Roadmap for the deliberate
+> tradeoffs (synchronous ingestion, no background task queue) left as
+> explicitly-scoped-out production upgrades.
+
+## Screenshots
+
+Captured from the actual running docker-compose stack (not mockups) - the
+config-status pattern referenced throughout this README (see "Document
+retrieval scope" and "Environment variables" below) is visible in the
+first and second screenshots exactly as it appears with this deployment's
+real `.env`: Azure OpenAI and SMTP configured, Google OAuth deliberately
+left unset.
+
+| | |
+|---|---|
+| **Home - live config status** | **Login - a "not configured" feature is disabled, not broken** |
+| [![Home page showing the backend configuration status panel](docs/screenshots/home-config-status.png)](docs/screenshots/home-config-status.png) | [![Login page with a disabled Google sign-in button](docs/screenshots/login.png)](docs/screenshots/login.png) |
+| **Signup** | **Chat - document uploaded and ready** |
+| [![Signup page](docs/screenshots/signup.png)](docs/screenshots/signup.png) | [![Chat UI with a PDF uploaded and its status showing ready](docs/screenshots/chat-document-uploaded.png)](docs/screenshots/chat-document-uploaded.png) |
+| **Chat - a real streamed, cited answer** | |
+| [![Chat UI showing a completed streamed answer with a page citation](docs/screenshots/chat-streamed-answer.png)](docs/screenshots/chat-streamed-answer.png) | |
+
+The final screenshot is a real round trip through the whole pipeline
+described below: a PDF fixture was uploaded and ingested (extract → chunk
+→ embed → Qdrant), a question was asked, and Azure OpenAI's streamed
+answer came back grounded in - and citing - the uploaded document's actual
+text (`sample.pdf, p.1`).
 
 ## Architecture
 
@@ -29,7 +55,7 @@ flowchart TB
         ENGINE["engine/ package<br/>extraction · chunking · embedding<br/>Qdrant search · RAG prompt/streaming<br/>(zero dependency on API/DB/auth code)"]
     end
 
-    PG[("Postgres<br/>users, chats, messages,<br/>documents (status/metadata)")]
+    PG[("Postgres<br/>users, password_reset_tokens,<br/>chats, messages,<br/>documents (status/metadata)")]
     QD[("Qdrant<br/>vector store<br/>every point tagged with<br/>user_id + chat_id")]
     AZ["Azure OpenAI<br/>embeddings + chat completions"]
 
@@ -332,6 +358,7 @@ container, so nothing needs to be duplicated between the two.
 | `QDRANT_COLLECTION`                | Name of the Qdrant collection documents are stored in                | Optional (defaults to `querynest_documents`) |
 | `FRONTEND_URL`                     | Frontend origin - used to build password-reset email links and the Google OAuth redirect back into the app | Yes |
 | `VITE_API_BASE_URL`                | Read by docker-compose as a **build arg** for the frontend image (Vite inlines `VITE_*` vars at build time, not at container runtime) - the URL the browser uses to reach the backend | Yes, for the docker-compose `frontend` build |
+| `STORAGE_DIR`                       | Where uploaded originals are written on disk, as `{STORAGE_DIR}/{user_id}/{document_id}/original.<ext>` (see `app/api/documents.py`) | Optional (defaults to `storage`, relative to the backend's working directory) |
 | `AZURE_EM_ENDPOINT`                 | Azure OpenAI resource endpoint used for embeddings                     | Optional (needed for document upload + chat) |
 | `AZURE_EM_API_KEY`                  | API key for the Azure OpenAI embeddings resource                      | Optional |
 | `AZURE_EM_API_VERSION`              | Azure OpenAI API version for the embeddings deployment                | Optional |
@@ -473,7 +500,7 @@ The backend exposes `GET /api/config/status` which reports, per group,
 whether every variable in that group is set:
 
 ```json
-{ "azure_ai": true, "google_oauth": false, "smtp": false }
+{ "azure_ai": true, "google_oauth": false, "smtp": true }
 ```
 
 The frontend uses this to show "configuration missing" banners for
@@ -484,9 +511,13 @@ features that depend on secrets which haven't been provided yet - when
 ### Verifying retrieval scope yourself
 
 This is the property the whole feature depends on, so it's worth checking
-directly rather than trusting the code. There are two things to prove:
-default (`scope="all"`) retrieval correctly reaches across a user's own
-chats, and both modes correctly refuse to cross into another user's data.
+directly rather than trusting the code - `backend/tests/test_qdrant_isolation.py`
+now exercises exactly this against a real (disposable) Qdrant collection
+as part of the automated suite (see "Running tests" below), but the manual
+walkthrough is still worth doing once yourself against the live app. There
+are two things to prove: default (`scope="all"`) retrieval correctly
+reaches across a user's own chats, and both modes correctly refuse to
+cross into another user's data.
 
 1. **Default scope reaches across your own chats:** create chat A (no
    documents) and chat B (upload a document to it), then ask chat A a
@@ -510,22 +541,79 @@ chats, and both modes correctly refuse to cross into another user's data.
    doing the work, not just that the LLM chose to follow its prompt
    instructions.
 
+## Running tests
+
+`backend/tests/` holds the automated suite (53 tests) that replaced the
+purely-manual verification this project relied on through Phase 3:
+
+| File | Covers |
+|---|---|
+| `test_qdrant_isolation.py` | **The most important test file in this project** - `engine/qdrant_client.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) Qdrant collection: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, and `delete_document()` only removes the targeted document's points. |
+| `test_chunking.py` | `engine/chunking.py` boundary cases - empty/whitespace-only pages, a page just under/at/over the split threshold, a page needing several chunks, a hard character-cut when a single paragraph has no boundary to split on, and `page_number`/`chunk_index` bookkeeping across multiple pages. |
+| `test_extraction.py` | `engine/extraction.py` against real fixture files (`tests/fixtures/sample.pdf`, `sample.txt`) - per-page PDF text via `pdfplumber`, TXT-as-a-single-page, invalid-UTF-8 handling, and `UnsupportedFileTypeError` for an unrecognized/missing extension. |
+| `test_auth_api.py` | `/api/auth/*` integration tests via FastAPI's `TestClient` - signup, duplicate email, login, wrong password, refresh-token type-confusion, and the `jwt_not_configured`/`smtp_not_configured`/`google_oauth_not_configured` 503 gates with those env vars unset. |
+| `test_chats_api.py` | `/api/chats/*` ownership checks - a chat belonging to another user 404s (indistinguishable from one that never existed), scoped listing, delete. |
+| `test_documents_api.py` | `/api/chats/{id}/documents/*` ownership checks plus the upload → status transition (`processing` → `ready`/`failed`), with `azure_ai_configured`/`ingest_document` monkeypatched to deterministic fakes so the test targets the endpoint's own status-transition logic rather than making a real Azure OpenAI call. |
+
+**Test database choice:** the integration tests (`test_auth_api.py`,
+`test_chats_api.py`, `test_documents_api.py`) run against an in-memory
+SQLite database via a `get_db` dependency override, not the docker-compose
+Postgres instance - documented in full in `backend/tests/conftest.py`'s
+module docstring. Short version: nothing these tests exercise depends on
+Postgres-specific behavior (no raw SQL, no JSONB/array columns, cascades
+are ORM-level `relationship(cascade=...)`, not DB triggers), so a fresh
+zero-setup SQLite schema per test is the simpler and equally correct
+choice - it is not a substitute for `alembic upgrade head` against real
+Postgres, which is exercised by actually running this project via
+docker-compose. `test_qdrant_isolation.py` is different: since Qdrant's
+filtering behavior is the single property this whole project depends on,
+those tests run against a real Qdrant instance rather than a mock.
+
+**Run the suite** inside the backend container (simplest - reuses the
+already-running docker-compose stack's network, so `test_qdrant_isolation.py`
+reaches Qdrant at its docker-compose service name with no extra
+configuration):
+
+```bash
+docker-compose exec backend pytest tests/ -v
+```
+
+Or from the host, outside docker (point `QDRANT_TEST_URL` at the
+docker-compose-published port, since `qdrant` as a hostname only resolves
+inside the docker network):
+
+```bash
+cd backend
+pip install -r requirements.txt
+QDRANT_TEST_URL=http://localhost:6333 pytest tests/ -v
+```
+
+Expected output ends with something like:
+
+```
+======================== 53 passed, 2 warnings in ~9s ========================
+```
+
+(The two warnings are pytest-asyncio/passlib deprecation notices unrelated
+to this project's code - not failures.)
+
 ## Roadmap
 
 - **Phase 1:** repo scaffold, docker-compose, health/config endpoints.
 - **Phase 2:** database models + Alembic migrations, authentication (JWT +
   Google OAuth + forgot-password via SMTP), chat/message history CRUD,
   and the frontend auth + chat-shell pages.
-- **Phase 3 (this phase):** the `app/engine/` RAG package (extraction,
-  chunking, Azure OpenAI embeddings/chat, Qdrant storage/search with
-  per-user isolation and an opt-in per-chat retrieval scope), document
-  upload/list/delete endpoints, a streaming (SSE) message-send endpoint,
-  and the frontend upload widget + streaming chat input with a
-  chat-scope checkbox.
-- **Phase 4 (next):** a full polished end-to-end Docker demo pass with
-  screenshots in this README, and an automated test suite (unit tests for
-  `app/engine/` - chunking boundaries, the Qdrant isolation filter - plus
-  integration tests for the API layer).
-- **Phase 5:** production-shaped upgrades called out as deliberate
-  tradeoffs above - a background task queue for ingestion instead of
-  synchronous processing, deployment configuration.
+- **Phase 3:** the `app/engine/` RAG package (extraction, chunking, Azure
+  OpenAI embeddings/chat, Qdrant storage/search with per-user isolation
+  and an opt-in per-chat retrieval scope), document upload/list/delete
+  endpoints, a streaming (SSE) message-send endpoint, and the frontend
+  upload widget + streaming chat input with a chat-scope checkbox.
+- **Phase 4 (this phase):** the automated test suite (53 tests - see
+  "Running tests" above), real screenshots of the running app in this
+  README, and a final documentation pass (this file).
+- **Phase 5 (not started):** production-shaped upgrades called out as
+  deliberate tradeoffs above - a background task queue for ingestion
+  instead of synchronous processing, and deployment configuration (this
+  project targets local docker-compose only; a real deployment would also
+  need CORS tightened from `allow_origins=["*"]`, HTTPS termination, and a
+  secrets manager instead of a `.env` file).

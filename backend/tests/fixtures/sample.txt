@@ -1,0 +1,6 @@
+QueryNest Test Document (TXT)
+
+This is a small plain-text fixture used to exercise
+app/engine/extraction.py's TXT path. Unlike PDF, a .txt
+file has no notion of pages, so extract_pages() should
+return it as a single (page_number=1, text) tuple.
