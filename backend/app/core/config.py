@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     GROQ_STT_MODEL: str = "whisper-large-v3"
     GROQ_TTS_MODEL: str = "playai-tts"
     GROQ_TTS_VOICE: str = "Fritz-PlayAI"
-    GROQ_LLM_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_LLM_MODEL: str = "openai/gpt-oss-120b"
 
     # --- JWT (auth) ----------------------------------------------------------
     JWT_SECRET_KEY: Optional[str] = None

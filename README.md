@@ -155,32 +155,60 @@ how the two modes map to the `scope` field on
      the upload request itself never crashes.
 2. **Ask a question** — `POST /api/chats/{chat_id}/messages` takes
    `{content, scope}` (`scope` is `"all"` or `"chat"`, defaulting to
-   `"all"` when omitted) and persists the user's message. What happens
-   next depends on whether the user has *any* `status=ready` document
-   anywhere in the requested scope (a real DB check, `has_any_ready_document`
-   in `app/api/messages.py` - never fooled by prompt engineering):
-   - **Has a ready document somewhere in scope:** calls
-     `app/engine/rag.retrieve()` (embed the question, search Qdrant always
-     filtered by `user_id`, and additionally by `chat_id` only when
-     `scope="chat"`), then `app/engine/rag.stream_answer()` streams the
-     answer back from the currently-active chat provider (Groq by
-     default, or Azure OpenAI - see "Chat provider selection" below)
-     token-by-token, grounded strictly in the retrieved excerpts (or, if
-     this specific question matched no chunks, a general-knowledge answer
-     with an explicit disclosure that it isn't grounded in the user's
-     documents).
-   - **Has NO ready document anywhere in scope:** calls
-     `app/engine/rag.stream_onboarding_reply()` instead - still a real,
-     live LLM call (not a hardcoded string), but under a tightly-scoped
-     system prompt (`ONBOARDING_SYSTEM_PROMPT`) that can greet the user
-     naturally and answer "what is QueryNest"/"who built this" in its own
-     words, while being explicitly instructed to refuse - never answer
-     from general knowledge - any question that would actually need real
-     information, since nothing has been uploaded yet to ground it in.
-     `retrieve()` is never called on this path - no Qdrant query happens
-     at all. The security-relevant part (whether this path is even
-     reached) is still the same code-level DB fact as before; only the
-     *wording* of the reply for that case is now LLM-generated.
+   `"all"` when omitted), persists the user's message, and streams the
+   reply from `app/engine/rag.stream_agentic_reply()` - a genuinely
+   **agentic, tool-calling** pipeline, not Python branching between
+   canned prompts. There is no `has_any_ready_document` gate and no
+   separate "onboarding" code path anymore - the model itself decides,
+   per message, whether it needs to search:
+   - The model is given exactly one tool, `search_documents` (schema:
+     `SEARCH_DOCUMENTS_TOOL` in `rag.py`), which takes a single `query`
+     string - nothing else. It is streamed a first completion with
+     `tools=[SEARCH_DOCUMENTS_TOOL]` and `tool_choice="auto"`, under
+     `AGENT_SYSTEM_PROMPT`.
+   - **For greetings, small talk, or questions about QueryNest itself**
+     ("what is this", "who built it"), the model answers directly in that
+     first streamed call - no tool call, no Qdrant query, no second
+     completion. This is what makes "hi" from a user who has documents
+     sitting in some *other* chat get a plain, natural greeting instead of
+     an awkward "the provided excerpts don't contain any information..."
+     refusal - the old three-bucket hardcoded design got this wrong,
+     because it branched purely on "does this user have any ready document
+     anywhere," never on what the message actually asked.
+   - **For anything else**, the system prompt requires the model to call
+     `search_documents` before answering - even a question it could
+     answer from memory (e.g. "what's the capital of France") must go
+     through the tool first, so the decision of whether an answer is
+     grounded is never skipped. The endpoint executes the call for real:
+     `app/engine/rag.retrieve()` embeds the model's `query` argument and
+     searches Qdrant, filtered by `user_id` (always, from the
+     authenticated session - **never** an argument the model can supply)
+     and by `chat_id` only when `scope="chat"` (also supplied by the
+     endpoint, not the model). The result is fed back as a `role="tool"`
+     message, and a **second** streamed completion produces the final
+     answer:
+     - If excerpts came back, the model must answer using only those
+       excerpts, citing `(filename, p.N)` inline, and say so plainly if
+       they don't contain enough information - never fall back to outside
+       knowledge silently.
+     - If no excerpts came back (no documents yet, or none matched), the
+       model may answer from general knowledge instead, but is required to
+       open with an explicit disclosure that the answer isn't grounded in
+       the user's documents (e.g. "I couldn't find anything about this in
+       your documents, but here's what I know generally: ...") - verified
+       live against the real Groq-backed stack for both a zero-document
+       user and a document owner whose question didn't match anything.
+   - The two arguments that actually matter for isolation -
+     `user_id`/`chat_id` - are always supplied by `app/api/messages.py`
+     from the authenticated request, captured as plain values before the
+     streaming generator runs (not read lazily from the ORM `User`/`Chat`
+     objects, which are already detached by the time a `StreamingResponse`
+     generator executes). The model only ever supplies the free-text
+     `query` string; it has no way to name a different user or chat to
+     search, regardless of what the request body or conversation asks it
+     to do. Verified live: a document uploaded by one user is never
+     retrieved by a different user asking the identical question in their
+     own chat.
    - Either way, the reply streams back over **Server-Sent Events**
      (`text/event-stream`) - real incremental tokens, not a spinner
      followed by the whole answer at once - and once the stream finishes,
@@ -264,10 +292,11 @@ are selectable via `LLM_PROVIDER`:
 
 `app/engine/llm_provider.py` is the single place that reads
 `LLM_PROVIDER` and hands back the right (name, async client, model) tuple
-- `app/engine/rag.py`'s `stream_answer()`/`stream_onboarding_reply()` call
+- `app/engine/rag.py`'s `stream_agentic_reply()` calls
 `get_active_chat_provider()` instead of reaching into
-`azure_client.py`/`groq_client.py` directly, so neither of those functions
-needs to know or care which provider is active.
+`azure_client.py`/`groq_client.py` directly, so it doesn't need to know
+or care which provider is active - including whether that provider's
+streamed response includes a tool call.
 
 `app/engine/azure_client.py`'s `azure_ai_configured()` (kept under that
 name for backward compatibility - this project originally supported only
@@ -366,7 +395,7 @@ querynest/
 │   │   │   ├── chunking.py      # page text -> embedding-sized chunks
 │   │   │   ├── qdrant_client.py # vector storage/search - user_id always filtered, chat_id optional
 │   │   │   ├── ingestion.py     # extract -> chunk -> embed -> upsert (no DB writes)
-│   │   │   └── rag.py           # retrieve() + stream_answer() + stream_onboarding_reply()
+│   │   │   └── rag.py           # retrieve() + stream_agentic_reply() (tool-calling agent)
 │   │   └── api/
 │   │       ├── config_status.py # GET /api/config/status
 │   │       ├── auth.py          # /api/auth/* (signup/login/refresh/...)
@@ -652,7 +681,7 @@ below follow the exact same pattern.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /api/chats/{chat_id}/messages` | `{content, scope}` - `scope` is `"all"` (default, if omitted) or `"chat"`. Persists the user message; if the user has a `status=ready` document anywhere in scope, retrieves matching chunks from Qdrant (always scoped to the caller's `user_id`; additionally scoped to this `chat_id` only when `scope="chat"`) and streams a grounded answer, otherwise streams a real (but tightly-scoped) LLM reply via `stream_onboarding_reply()` with no retrieval at all - see "Document upload + RAG chat flow" above. Either way the reply **streams** back as Server-Sent Events (`event: token` per token, `event: done` at the end, `event: error` on failure) via `StreamingResponse`, and is persisted as an assistant `Message` once the stream completes. **404** if the chat isn't the caller's. **503** if the RAG stack isn't configured (checked *before* the stream starts). |
+| `POST /api/chats/{chat_id}/messages` | `{content, scope}` - `scope` is `"all"` (default, if omitted) or `"chat"`. Persists the user message, then streams the reply from `stream_agentic_reply()` - a tool-calling agent that itself decides whether to call `search_documents` (always scoped to the caller's `user_id`; additionally scoped to this `chat_id` only when `scope="chat"` - both supplied by the endpoint, never the model) before answering - see "Ask a question" above. The reply **streams** back as Server-Sent Events (`event: token` per token, `event: done` at the end, `event: error` on failure) via `StreamingResponse`, and is persisted as an assistant `Message` once the stream completes. **404** if the chat isn't the caller's. **503** if the RAG stack isn't configured (checked *before* the stream starts). |
 
 ### Speech endpoints (`/api/speech`)
 
@@ -749,7 +778,7 @@ cross into another user's data.
 
 ## Running tests
 
-`backend/tests/` holds the automated suite (98 tests) that replaced the
+`backend/tests/` holds the automated suite (96 tests) that replaced the
 purely-manual verification this project relied on through Phase 3:
 
 | File | Covers |
@@ -758,12 +787,12 @@ purely-manual verification this project relied on through Phase 3:
 | `test_chunking.py` | `engine/chunking.py` boundary cases - empty/whitespace-only pages, a page just under/at/over the split threshold, a page needing several chunks, a hard character-cut when a single paragraph has no boundary to split on, and `page_number`/`chunk_index` bookkeeping across multiple pages. |
 | `test_extraction.py` | `engine/extraction.py` against real fixture files (`tests/fixtures/sample.pdf`, `sample.txt`) - per-page PDF text via `pdfplumber`, TXT-as-a-single-page, invalid-UTF-8 handling, `UnsupportedFileTypeError` for an unrecognized/missing extension, and the **OCR fallback**: a page with real embedded text never invokes OCR, a page with empty/near-empty text triggers the EasyOCR/pymupdf fallback (both mocked - real OCR inference is far too slow for the automated suite), a mixed real-text/scanned document is decided per-page, and an image file is OCR'd directly. |
 | `test_llm_provider.py` | `engine/llm_provider.py`'s `LLM_PROVIDER` selection - defaults to `"groq"` for unset/blank/unrecognized values, case-insensitive `"azure"` detection, `chat_provider_configured()`/`get_active_chat_provider()` check/construct only the selected provider's client (never the other one's), with azure_client/groq_client's real client construction monkeypatched. |
-| `test_rag.py` | `engine/rag.py`'s prompt-building and streaming - `stream_answer()` picks the grounded vs. general-knowledge-fallback system prompt correctly and forwards the active provider's model, and `stream_onboarding_reply()` uses the onboarding system prompt (never the grounded/fallback ones), includes prior history, and never includes retrieved document excerpts - with the active chat provider's client mocked (no real Groq/Azure calls). |
+| `test_rag.py` | `engine/rag.py`'s agentic tool-calling pipeline, `stream_agentic_reply()` - a direct answer (greeting, no tool call) never invokes `retrieve()` or a second completion; prior chat history is included in the first call; a tool-call round trip calls `retrieve()` with exactly the query/user_id/chat_id expected (proving the model can only ever supply the query string, never user_id/chat_id) and makes a second streamed call carrying a `role="tool"` message; a no-matching-chunks tool result still produces a final streamed answer. With the active chat provider's client mocked throughout (no real Groq/Azure calls). |
 | `test_config_status.py` | `GET /api/config/status`'s provider-aware `rag` group - `true` only when embeddings AND the *currently selected* provider's own vars are set (never both providers' credentials at once), plus the `speech` group and the `llm_provider` field. |
 | `test_auth_api.py` | `/api/auth/*` integration tests via FastAPI's `TestClient` - signup, duplicate email, login, wrong password, refresh-token type-confusion, and the `jwt_not_configured`/`smtp_not_configured` 503 gates with those env vars unset. |
 | `test_chats_api.py` | `/api/chats/*` ownership checks - a chat belonging to another user 404s (indistinguishable from one that never existed), scoped listing, delete. |
 | `test_documents_api.py` | `/api/chats/{id}/documents/*` ownership checks plus the upload → status transition (`processing` → `ready`/`failed`), with `azure_ai_configured`/`ingest_document` monkeypatched to deterministic fakes so the test targets the endpoint's own status-transition logic rather than making a real Azure OpenAI/Groq call. |
-| `test_messages_api.py` | `/api/chats/{id}/messages` - the no-ready-documents hard gate now uses `stream_onboarding_reply()` (mocked to a fake deterministic async generator) instead of retrieval/`stream_answer()` (asserted never called), auto-titling, and the 503/404 gates. |
+| `test_messages_api.py` | `/api/chats/{id}/messages` - `stream_agentic_reply()` (mocked to a fake deterministic async generator) is the only engine call this endpoint makes; asserts the authenticated `user_id` (never anything from the request body) and the scope-derived `chat_id` are what's passed through, plus auto-titling and the 503/404 gates. |
 | `test_speech_api.py` | `/api/speech/*` - 503 when Groq isn't configured, auth-required, happy-path wiring with `transcribe_audio`/`synthesize_speech` monkeypatched to deterministic fakes, and Groq failures surfacing as a 502 rather than a raw 500. |
 
 **Test database choice:** the integration tests (`test_auth_api.py`,
@@ -803,7 +832,7 @@ QDRANT_TEST_URL=http://localhost:6333 pytest tests/ -v
 Expected output ends with something like:
 
 ```
-======================== 98 passed, 7 warnings in ~14s ========================
+======================== 96 passed, 7 warnings in ~20s ========================
 ```
 
 (The warnings are pytest-asyncio/passlib deprecation notices unrelated to
@@ -833,16 +862,24 @@ confirm this on your own machine.
   upload widget + streaming chat input with a chat-scope checkbox.
 - **Phase 4:** the automated test suite, real screenshots of the running
   app in this README, and a final documentation pass (this file).
-- **Phase 5 (this phase):** OCR for images and scanned PDF pages
-  (EasyOCR + pymupdf, per-page fallback), speech (Groq Whisper
-  transcription via a mic button, Groq PlayAI text-to-speech per
-  message), a selectable chat provider (`LLM_PROVIDER` - Groq by default,
-  or Azure OpenAI), and replacing the old hardcoded "no documents
-  uploaded" refusal with a real, tightly-scoped LLM reply
-  (`stream_onboarding_reply()`) that can greet the user and answer
-  questions about QueryNest itself while still refusing to answer real
-  content questions from general knowledge.
-- **Phase 6 (not started):** production-shaped upgrades called out as
+- **Phase 5:** OCR for images and scanned PDF pages (EasyOCR + pymupdf,
+  per-page fallback), speech (Groq Whisper transcription via a mic
+  button, Groq PlayAI text-to-speech per message), and a selectable chat
+  provider (`LLM_PROVIDER` - Groq by default, or Azure OpenAI).
+- **Phase 6 (this phase):** replaced all fixed Python branching between
+  canned system prompts (a DB "has any ready document" gate choosing
+  between a grounded prompt, a general-knowledge-fallback prompt, and a
+  separate "onboarding" prompt) with a single genuinely agentic,
+  tool-calling design - `stream_agentic_reply()` gives the model one real
+  tool (`search_documents`) and lets it decide, per message, whether the
+  question needs retrieval at all, including greeting/small-talk/
+  "what is QueryNest" questions that are now answered directly rather than
+  via any hardcoded detection. This fixed a real bug found through live
+  testing: a user with documents sitting in some other chat saying "hi"
+  previously got an awkward grounded-refusal instead of a natural
+  greeting, because the old design branched only on "does this user have
+  any ready document anywhere," never on what the message actually asked.
+- **Phase 7 (not started):** production-shaped upgrades called out as
   deliberate tradeoffs above - a background task queue for ingestion
   instead of synchronous processing, and deployment configuration (this
   project targets local docker-compose only; a real deployment would also

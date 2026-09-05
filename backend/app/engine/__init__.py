@@ -32,5 +32,6 @@ Modules:
   - qdrant_client.py: vector storage/search, with per-(user_id, chat_id)
                       tenant isolation enforced in every query
   - ingestion.py:     extract -> chunk -> embed -> upsert, no DB writes
-  - rag.py:           retrieve() + stream_answer() for the chat endpoint
+  - rag.py:           retrieve() + stream_agentic_reply() (tool-calling
+                      agent) for the chat endpoint
 """

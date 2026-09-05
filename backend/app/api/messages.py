@@ -1,13 +1,22 @@
 """
 Message-sending endpoint: persist a user message, then stream back an
-assistant reply grounded in the user's uploaded documents (RAG).
+assistant reply from the agentic chat pipeline (app/engine/rag.py's
+stream_agentic_reply).
 
 This is one of the two places (with app/api/documents.py) that touches
 both the DB/auth stack and app/engine/* - it checks auth/ownership,
-persists the user Message row, calls the plain engine functions
-(engine.rag.retrieve / engine.rag.stream_answer - no ORM objects in or
-out), streams the tokens back over Server-Sent Events as they arrive, then
-persists the full assistant reply once the stream completes.
+persists the user Message row, calls the plain engine function (no ORM
+objects in or out), streams the tokens back over Server-Sent Events as
+they arrive, then persists the full assistant reply once the stream
+completes.
+
+Whether/what to search is entirely the model's decision (see
+stream_agentic_reply's docstring and AGENT_SYSTEM_PROMPT in rag.py) - this
+endpoint no longer pre-checks "does the user have any documents" or
+branches between different canned/prompt paths in Python. The one thing
+that stays a server-side fact, never something the model supplies: WHICH
+user's (and optionally which chat's) documents the search tool is allowed
+to touch.
 
 Retrieval scope: `MessageCreate.scope` picks between the two supported
 modes - "all" (the default) searches every document the current user has
@@ -29,8 +38,8 @@ from app.api.deps import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.engine.azure_client import azure_ai_configured
 from app.engine.llm_provider import get_llm_provider_name
-from app.engine.rag import retrieve, stream_answer, stream_onboarding_reply
-from app.models import Chat, Document, DocumentStatus, Message, MessageRole, User
+from app.engine.rag import stream_agentic_reply
+from app.models import Chat, Message, MessageRole, User
 
 router = APIRouter(prefix="/api/chats/{chat_id}/messages", tags=["messages"])
 
@@ -115,53 +124,29 @@ async def send_message(
     db.add(user_message)
     db.commit()
 
-    # Hard gate (code-level, not just a prompt instruction an LLM could be
-    # talked past): if the user has NO ready documents anywhere in the
-    # requested scope, refuse before ever calling the LLM, rather than
-    # letting this endpoint quietly become a generic no-grounding chatbot.
-    # This is a real DB check (not app/engine/*, which has no DB access) -
-    # scoped the same way retrieval itself is scoped below.
-    documents_query = db.query(Document).filter(
-        Document.user_id == current_user.id, Document.status == DocumentStatus.ready
-    )
-    if body.scope == "chat":
-        documents_query = documents_query.filter(Document.chat_id == chat_id)
-    has_any_ready_document = db.query(documents_query.exists()).scalar()
-
-    # scope="all" (default): retrieve from every chat this user owns
-    # (chat_id=None - no chat_id filter applied in Qdrant). scope="chat":
-    # restrict to this chat only. Either way, app/engine/qdrant_client.py's
-    # search() always filters by user_id - that part is never optional.
-    retrieved = (
-        retrieve(
-            body.content,
-            user_id=current_user.id,
-            chat_id=chat_id if body.scope == "chat" else None,
-        )
-        if has_any_ready_document
-        else []
-    )
+    # scope="all" (default): the search tool the model may call is allowed
+    # to reach every chat this user owns (chat_id=None passed through to
+    # retrieve()). scope="chat": restrict it to this chat only. Either way,
+    # app/engine/qdrant_client.py's search() always filters by user_id -
+    # that part is never optional, and it's the caller (this endpoint),
+    # never the model, that supplies these values - see
+    # stream_agentic_reply()'s docstring.
+    scope_chat_id = chat_id if body.scope == "chat" else None
+    # Captured as a plain int BEFORE event_stream() runs, not accessed as
+    # current_user.id from inside it: event_stream() is a lazy generator
+    # that only actually executes once the StreamingResponse starts
+    # streaming, by which point FastAPI has already closed the
+    # request-scoped `db` session and detached `current_user` - touching
+    # any of its attributes at that point raises a SQLAlchemy
+    # DetachedInstanceError.
+    user_id = current_user.id
 
     async def event_stream() -> AsyncGenerator[str, None]:
         full_text = ""
         try:
-            # No ready documents anywhere in scope: still a REAL LLM call
-            # (not a hardcoded string), but through stream_onboarding_reply()
-            # - a tightly-scoped system prompt (see app/engine/rag.py) that
-            # can greet naturally and answer "what is QueryNest"/"who built
-            # this" in its own words, while being explicitly instructed to
-            # refuse - not answer from general knowledge - anything that
-            # actually needs real information. The hard gate is still real:
-            # has_any_ready_document is a DB fact checked above, not
-            # something a clever prompt can talk the model out of; only the
-            # *reply itself*, for this specific "nothing uploaded yet"
-            # moment, is now LLM-generated instead of regex-matched.
-            token_source = (
-                stream_onboarding_reply(body.content, history)
-                if not has_any_ready_document
-                else stream_answer(body.content, retrieved, history)
-            )
-            async for token in token_source:
+            async for token in stream_agentic_reply(
+                body.content, user_id=user_id, chat_id=scope_chat_id, history=history
+            ):
                 full_text += token
                 yield _sse("token", {"content": token})
         except Exception as exc:  # noqa: BLE001 - surface the failure over SSE, don't just hang up

@@ -37,7 +37,7 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_STT_MODEL = "whisper-large-v3"
 DEFAULT_TTS_MODEL = "playai-tts"
 DEFAULT_TTS_VOICE = "Fritz-PlayAI"
-DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_CHAT_MODEL = "openai/gpt-oss-120b"
 
 # Hard cap on how much text synthesize_speech() will send to Groq per call -
 # bounds cost/latency for a very long assistant reply. Callers may pass

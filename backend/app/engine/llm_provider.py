@@ -10,8 +10,8 @@ via the LLM_PROVIDER env var:
 This module is the single place that reads LLM_PROVIDER and hands back
 the right (name, async client, model) tuple, so nothing else in the
 engine has to re-implement that branching - app/engine/rag.py's
-stream_answer() calls get_active_chat_provider() instead of reaching into
-azure_client.py/groq_client.py directly, and
+stream_agentic_reply() calls get_active_chat_provider() instead of
+reaching into azure_client.py/groq_client.py directly, and
 azure_client.azure_ai_configured() calls chat_provider_configured() for
 the combined "is the RAG stack ready" check used by
 app/api/documents.py / app/api/messages.py.
