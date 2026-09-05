@@ -30,5 +30,5 @@ python-docx==1.1.2
 # present above, pulled in by authlib); pytest-asyncio is included for any
 # future async test functions even though the current suite is entirely
 # synchronous (TestClient wraps async endpoints transparently).
-pytest==8.3.4
-pytest-asyncio==0.25.2
+pytest==9.0.3
+pytest-asyncio==1.4.0
