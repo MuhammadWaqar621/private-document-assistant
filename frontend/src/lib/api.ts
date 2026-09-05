@@ -31,6 +31,17 @@ function errorMessageFrom(body: unknown): string | null {
       const message = (detail as { message: unknown }).message;
       if (typeof message === "string") return message;
     }
+    // FastAPI's pydantic-validation-error shape: detail is an array of
+    // {loc, msg, type} objects (e.g. our password-strength validator).
+    // pydantic v2 prefixes a custom validator's ValueError with
+    // "Value error, " - strip that, it's an internal implementation
+    // detail the user shouldn't see.
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0] as { msg?: unknown };
+      if (typeof first.msg === "string") {
+        return first.msg.replace(/^Value error,\s*/, "");
+      }
+    }
   }
   return null;
 }

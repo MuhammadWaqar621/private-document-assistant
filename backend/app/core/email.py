@@ -29,9 +29,9 @@ async def send_password_reset_email(to_email: str, reset_link: str) -> None:
     message = EmailMessage()
     message["From"] = settings.SMTP_FROM_EMAIL
     message["To"] = to_email
-    message["Subject"] = "Reset your querynest password"
+    message["Subject"] = "Reset your QueryNest password"
     message.set_content(
-        "We received a request to reset your querynest password.\n\n"
+        "We received a request to reset your QueryNest password.\n\n"
         f"Reset it here: {reset_link}\n\n"
         "This link expires in 1 hour. If you didn't request this, you can "
         "safely ignore this email."

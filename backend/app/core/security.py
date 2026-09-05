@@ -9,6 +9,7 @@ expire after JWT_REFRESH_TOKEN_EXPIRE_DAYS. Both carry `sub` = the user id
 refresh token from being replayed as an access token if it leaks.
 """
 
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,6 +20,39 @@ from passlib.context import CryptContext
 from app.core.config import get_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+MIN_PASSWORD_LENGTH = 8
+
+# Enforced server-side (the real security boundary - client-side checks
+# are just a UX convenience and can't be trusted) on both signup and
+# reset-password. Requires: minimum length, at least one uppercase letter,
+# one lowercase letter, one digit, and one special (non-alphanumeric)
+# character.
+_UPPERCASE_RE = re.compile(r"[A-Z]")
+_LOWERCASE_RE = re.compile(r"[a-z]")
+_DIGIT_RE = re.compile(r"[0-9]")
+_SPECIAL_RE = re.compile(r"[^A-Za-z0-9]")
+
+
+class WeakPasswordError(ValueError):
+    """Raised when a password doesn't meet the minimum strength policy."""
+
+
+def validate_password_strength(password: str) -> None:
+    problems = []
+    if len(password) < MIN_PASSWORD_LENGTH:
+        problems.append(f"at least {MIN_PASSWORD_LENGTH} characters")
+    if not _UPPERCASE_RE.search(password):
+        problems.append("an uppercase letter")
+    if not _LOWERCASE_RE.search(password):
+        problems.append("a lowercase letter")
+    if not _DIGIT_RE.search(password):
+        problems.append("a number")
+    if not _SPECIAL_RE.search(password):
+        problems.append("a special character")
+
+    if problems:
+        raise WeakPasswordError("Password must contain " + ", ".join(problems) + ".")
 
 
 def hash_password(password: str) -> str:

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     )
 
     # --- App metadata -----------------------------------------------------
-    APP_NAME: str = "querynest"
+    APP_NAME: str = "QueryNest"
     ENVIRONMENT: str = "development"
 
     # --- Database -----------------------------------------------------

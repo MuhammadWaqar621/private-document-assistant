@@ -141,6 +141,7 @@ def search(
     user_id: int,
     chat_id: Optional[int] = None,
     top_k: int = 5,
+    score_threshold: Optional[float] = None,
     client: Optional[QdrantClient] = None,
 ) -> List[SearchResult]:
     """Vector search scoped to `user_id` (always) and, optionally, `chat_id`.
@@ -155,7 +156,13 @@ def search(
     document uploaded in one chat can answer a question asked in another,
     as long as both are the same user's. Pass an explicit `chat_id` to
     additionally restrict results to that one chat's uploads (opt-in,
-    narrower scope)."""
+    narrower scope).
+
+    `score_threshold` is OPTIONAL and off by default - Qdrant otherwise
+    always returns its top-k nearest points regardless of how irrelevant
+    they are. This wrapper stays a generic scoped-search primitive; RAG
+    policy (what counts as "relevant enough") belongs in the caller - see
+    app/engine/rag.py's retrieve(), which passes MIN_RELEVANCE_SCORE."""
     client = client or get_qdrant_client()
 
     must_conditions = [
@@ -172,6 +179,7 @@ def search(
         query_vector=query_embedding,
         query_filter=query_filter,
         limit=top_k,
+        score_threshold=score_threshold,
     )
 
     return [

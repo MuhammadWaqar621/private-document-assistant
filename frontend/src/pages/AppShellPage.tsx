@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { Lock, MessageSquarePlus, Send, Trash2 } from "lucide-react";
 
 import DocumentUpload from "../components/DocumentUpload";
 import { ApiError, api } from "../lib/api";
@@ -108,6 +109,16 @@ export default function AppShellPage() {
   }
 
   async function createChat() {
+    // A chat's title only ever changes once its first message is sent
+    // (see the backend's auto-titling in app/api/messages.py) - so a chat
+    // still titled "New chat" is guaranteed to have zero messages yet.
+    // Reuse that one instead of creating another empty chat on top of it.
+    const existingEmptyChat = chats.find((c) => c.title === "New chat");
+    if (existingEmptyChat) {
+      await selectChat(existingEmptyChat.id);
+      return;
+    }
+
     setCreating(true);
     try {
       const chat = await api.post<Chat>("/api/chats", {}, true);
@@ -188,6 +199,12 @@ export default function AppShellPage() {
       try {
         const detail = await api.get<ChatDetail>(`/api/chats/${chatId}`, true);
         setSelectedChat(detail);
+        // The backend auto-titles a chat from its first message - keep the
+        // sidebar list (separate state from the selected chat's detail) in
+        // sync so the new title shows up there too, not just in the header.
+        setChats((prev) =>
+          prev.map((c) => (c.id === chatId ? { ...c, title: detail.title } : c)),
+        );
       } catch {
         // Keep the optimistic/streamed content on screen if the refetch
         // itself fails - not worth surfacing a second error.
@@ -211,8 +228,11 @@ export default function AppShellPage() {
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
       <aside className="flex w-72 flex-col border-r border-slate-200 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
-          <span className="text-lg font-bold tracking-tight">querynest</span>
+        <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-4">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-600 text-white">
+            <Lock size={14} strokeWidth={2.5} />
+          </div>
+          <span className="text-lg font-bold tracking-tight">QueryNest</span>
         </div>
 
         <div className="p-3">
@@ -220,9 +240,10 @@ export default function AppShellPage() {
             type="button"
             onClick={createChat}
             disabled={creating}
-            className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:opacity-50"
           >
-            {creating ? "Creating..." : "+ New chat"}
+            <MessageSquarePlus size={16} />
+            {creating ? "Creating..." : "New chat"}
           </button>
         </div>
 
@@ -238,8 +259,8 @@ export default function AppShellPage() {
               onClick={() => selectChat(chat.id)}
               className={`group mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${
                 selectedChat?.id === chat.id
-                  ? "bg-slate-100 font-medium"
-                  : "hover:bg-slate-50"
+                  ? "bg-brand-50 font-medium text-brand-800"
+                  : "text-slate-700 hover:bg-slate-50"
               }`}
             >
               <span className="truncate">{chat.title}</span>
@@ -247,9 +268,9 @@ export default function AppShellPage() {
                 role="button"
                 tabIndex={0}
                 onClick={(e) => deleteChat(chat.id, e)}
-                className="ml-2 hidden shrink-0 text-xs text-slate-400 hover:text-red-600 group-hover:inline"
+                className="ml-2 hidden shrink-0 text-slate-400 hover:text-red-600 group-hover:inline"
               >
-                Delete
+                <Trash2 size={14} />
               </span>
             </button>
           ))}
@@ -294,19 +315,11 @@ export default function AppShellPage() {
               <h2 className="font-semibold">{selectedChat.title}</h2>
             </div>
 
-            <DocumentUpload
-              chatId={selectedChat.id}
-              documents={documents}
-              onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
-              onAuthFailure={handleAuthFailure}
-              disabled={!azureConfigured}
-            />
-
             <div className="flex-1 overflow-y-auto px-6 py-4">
               {loadingMessages && <p className="text-sm text-slate-400">Loading messages...</p>}
               {!loadingMessages && selectedChat.messages.length === 0 && streamingReply === null && (
                 <p className="text-sm text-slate-400">
-                  No messages yet in this chat. Upload a document above, then
+                  No messages yet in this chat. Attach a document below, then
                   ask a question about it.
                 </p>
               )}
@@ -316,17 +329,17 @@ export default function AppShellPage() {
                     key={message.id}
                     className={`max-w-2xl whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
                       message.role === "user"
-                        ? "ml-auto bg-slate-900 text-white"
-                        : "bg-white text-slate-900 shadow-sm"
+                        ? "ml-auto bg-brand-600 text-white"
+                        : "bg-white text-slate-900 shadow-card"
                     }`}
                   >
                     {message.content}
                   </div>
                 ))}
                 {streamingReply !== null && (
-                  <div className="max-w-2xl whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-sm">
+                  <div className="max-w-2xl whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card">
                     {streamingReply}
-                    <span className="ml-0.5 animate-pulse text-slate-400">▍</span>
+                    <span className="ml-0.5 animate-pulse text-brand-500">▍</span>
                   </div>
                 )}
               </div>
@@ -334,6 +347,16 @@ export default function AppShellPage() {
             </div>
 
             <form onSubmit={handleSendMessage} className="border-t border-slate-200 p-4">
+              <div className="mb-2">
+                <DocumentUpload
+                  chatId={selectedChat.id}
+                  documents={documents}
+                  onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
+                  onAuthFailure={handleAuthFailure}
+                  disabled={!azureConfigured}
+                />
+              </div>
+
               <label className="mb-2 flex items-center gap-2 text-xs text-slate-500">
                 <input
                   type="checkbox"
@@ -358,13 +381,14 @@ export default function AppShellPage() {
                       ? "Ask a question about your uploaded documents..."
                       : "Configuration missing - set Azure OpenAI credentials in .env"
                   }
-                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                 />
                 <button
                   type="submit"
                   disabled={chatInputDisabled || !messageInput.trim()}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                  className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                 >
+                  <Send size={15} />
                   {sending ? "Sending..." : "Send"}
                 </button>
               </div>

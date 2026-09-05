@@ -8,7 +8,7 @@ choice here.
 
 from app.core.config import get_settings
 
-from .conftest import auth_headers, signup, unique_email
+from .conftest import VALID_TEST_PASSWORD, auth_headers, signup, unique_email
 
 
 # --- signup ------------------------------------------------------------
@@ -17,7 +17,7 @@ from .conftest import auth_headers, signup, unique_email
 def test_signup_creates_a_user_and_returns_tokens(client):
     email = unique_email()
     response = client.post(
-        "/api/auth/signup", json={"email": email, "password": "a-long-password-123"}
+        "/api/auth/signup", json={"email": email, "password": VALID_TEST_PASSWORD}
     )
 
     assert response.status_code == 201
@@ -27,15 +27,41 @@ def test_signup_creates_a_user_and_returns_tokens(client):
     assert body["token_type"] == "bearer"
 
 
+def test_signup_rejects_a_password_missing_an_uppercase_letter(client):
+    response = client.post(
+        "/api/auth/signup",
+        json={"email": unique_email(), "password": "lowercase-only-123!"},
+    )
+    assert response.status_code == 422
+    assert "uppercase letter" in response.text
+
+
+def test_signup_rejects_a_password_missing_a_special_character(client):
+    response = client.post(
+        "/api/auth/signup",
+        json={"email": unique_email(), "password": "NoSpecialChar123"},
+    )
+    assert response.status_code == 422
+    assert "special character" in response.text
+
+
+def test_signup_rejects_a_too_short_password(client):
+    response = client.post(
+        "/api/auth/signup", json={"email": unique_email(), "password": "Ab1!"}
+    )
+    assert response.status_code == 422
+    assert "8 characters" in response.text
+
+
 def test_signup_duplicate_email_is_rejected(client):
     email = unique_email()
     first = client.post(
-        "/api/auth/signup", json={"email": email, "password": "a-long-password-123"}
+        "/api/auth/signup", json={"email": email, "password": VALID_TEST_PASSWORD}
     )
     assert first.status_code == 201
 
     second = client.post(
-        "/api/auth/signup", json={"email": email, "password": "a-different-password-456"}
+        "/api/auth/signup", json={"email": email, "password": "A-different-Password-456!"}
     )
 
     assert second.status_code == 400
@@ -123,7 +149,7 @@ def test_signup_returns_503_when_jwt_not_configured(client, monkeypatch):
 
     response = client.post(
         "/api/auth/signup",
-        json={"email": unique_email(), "password": "a-long-password-123"},
+        json={"email": unique_email(), "password": VALID_TEST_PASSWORD},
     )
 
     assert response.status_code == 503

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from jose import JWTError
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -20,12 +20,14 @@ from app.core.config import Settings, get_settings
 from app.core.email import send_password_reset_email, smtp_configured
 from app.core.security import (
     JWTNotConfiguredError,
+    WeakPasswordError,
     create_access_token,
     create_refresh_token,
     decode_token,
     generate_password_reset_token,
     hash_password,
     require_jwt_configured,
+    validate_password_strength,
     verify_password,
 )
 from app.db.session import get_db
@@ -40,6 +42,15 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def _check_password_strength(cls, value: str) -> str:
+        try:
+            validate_password_strength(value)
+        except WeakPasswordError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class LoginRequest(BaseModel):
@@ -69,6 +80,15 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, value: str) -> str:
+        try:
+            validate_password_strength(value)
+        except WeakPasswordError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class MessageResponse(BaseModel):

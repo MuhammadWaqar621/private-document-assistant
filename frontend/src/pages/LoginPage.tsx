@@ -13,7 +13,7 @@ type TokenResponse = {
 };
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -80,7 +80,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="mt-1 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+          className="mt-1 w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:opacity-50"
         >
           {submitting ? "Logging in..." : "Log in"}
         </button>
@@ -92,7 +92,7 @@ export default function LoginPage() {
         </Link>
         <span>
           Don't have an account?{" "}
-          <Link to="/signup" className="font-medium text-slate-900 hover:underline">
+          <Link to="/signup" className="font-medium text-brand-600 hover:underline">
             Sign up
           </Link>
         </span>

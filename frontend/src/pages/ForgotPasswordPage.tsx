@@ -6,7 +6,7 @@ import AuthLayout from "../components/AuthLayout";
 import { ApiError, api } from "../lib/api";
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
 function isSmtpNotConfigured(err: ApiError): boolean {
   const detail = (err.body as { detail?: { error?: string } } | null)?.detail;
@@ -71,7 +71,7 @@ export default function ForgotPasswordPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="mt-1 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+            className="mt-1 w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:opacity-50"
           >
             {submitting ? "Sending..." : "Send reset link"}
           </button>
@@ -79,7 +79,7 @@ export default function ForgotPasswordPage() {
       )}
 
       <p className="mt-5 text-center text-sm text-slate-500">
-        <Link to="/login" className="font-medium text-slate-900 hover:underline">
+        <Link to="/login" className="font-medium text-brand-600 hover:underline">
           Back to log in
         </Link>
       </p>

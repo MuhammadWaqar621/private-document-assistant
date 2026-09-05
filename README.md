@@ -1,9 +1,9 @@
-# querynest
+# QueryNest
 
 Your own private AI assistant for your own documents. Upload files that are
 yours alone, and get answers grounded strictly in their content — never in
 public training data. General-purpose tools like ChatGPT or Claude have
-never seen this content and can't answer questions about it; querynest
+never seen this content and can't answer questions about it; QueryNest
 exists specifically to let you interrogate your own private, secure
 documents without ever sending them to a third-party AI product.
 

@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import AuthLayout from "../components/AuthLayout";
 import { ApiError, api } from "../lib/api";
 import { setTokens } from "../lib/auth";
+import { PASSWORD_POLICY_HINT, passwordPolicyError } from "../lib/passwordPolicy";
 
 type TokenResponse = {
   access_token: string;
@@ -13,7 +14,7 @@ type TokenResponse = {
 };
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -32,8 +33,9 @@ export default function SignupPage() {
       setError("Passwords don't match.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    const policyError = passwordPolicyError(password);
+    if (policyError) {
+      setError(policyError);
       return;
     }
 
@@ -84,6 +86,7 @@ export default function SignupPage() {
             onChange={(e) => setPassword(e.target.value)}
             className={inputClass}
           />
+          <p className="mt-1 text-xs text-slate-400">{PASSWORD_POLICY_HINT}</p>
         </div>
 
         <div>
@@ -106,7 +109,7 @@ export default function SignupPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="mt-1 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+          className="mt-1 w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:opacity-50"
         >
           {submitting ? "Creating account..." : "Sign up"}
         </button>
@@ -114,7 +117,7 @@ export default function SignupPage() {
 
       <p className="mt-5 text-center text-sm text-slate-500">
         Already have an account?{" "}
-        <Link to="/login" className="font-medium text-slate-900 hover:underline">
+        <Link to="/login" className="font-medium text-brand-600 hover:underline">
           Log in
         </Link>
       </p>

@@ -4,9 +4,10 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import AuthLayout from "../components/AuthLayout";
 import { ApiError, api } from "../lib/api";
+import { PASSWORD_POLICY_HINT, passwordPolicyError } from "../lib/passwordPolicy";
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -27,8 +28,9 @@ export default function ResetPasswordPage() {
       setError("Passwords don't match.");
       return;
     }
-    if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters.");
+    const policyError = passwordPolicyError(newPassword);
+    if (policyError) {
+      setError(policyError);
       return;
     }
 
@@ -71,7 +73,7 @@ export default function ResetPasswordPage() {
           <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">{message}</p>
           <Link
             to="/login"
-            className="w-full rounded-lg bg-slate-900 px-4 py-2 text-center text-sm font-medium text-white shadow-sm transition hover:bg-slate-700"
+            className="w-full rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-medium text-white shadow-card transition hover:bg-brand-700"
           >
             Go to log in
           </Link>
@@ -91,6 +93,7 @@ export default function ResetPasswordPage() {
               onChange={(e) => setNewPassword(e.target.value)}
               className={inputClass}
             />
+            <p className="mt-1 text-xs text-slate-400">{PASSWORD_POLICY_HINT}</p>
           </div>
 
           <div>
@@ -116,7 +119,7 @@ export default function ResetPasswordPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="mt-1 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+            className="mt-1 w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:opacity-50"
           >
             {submitting ? "Resetting..." : "Reset password"}
           </button>

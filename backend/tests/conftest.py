@@ -123,11 +123,17 @@ def client(db_engine, monkeypatch):
     get_settings.cache_clear()
 
 
+# Satisfies app/core/security.py's validate_password_strength() (min
+# length, upper/lower/digit/special) - used as the default test password
+# everywhere so a policy change only needs updating in one place.
+VALID_TEST_PASSWORD = "A-long-Password-123!"
+
+
 def unique_email(prefix: str = "user") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}@example.com"
 
 
-def signup(client: TestClient, email: str | None = None, password: str = "a-long-password-123") -> dict:
+def signup(client: TestClient, email: str | None = None, password: str = VALID_TEST_PASSWORD) -> dict:
     """Sign up a fresh user and return the token response body."""
     email = email or unique_email()
     response = client.post("/api/auth/signup", json={"email": email, "password": password})

@@ -29,7 +29,7 @@ from app.api.deps import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.engine.azure_client import azure_ai_configured
 from app.engine.rag import retrieve, stream_answer
-from app.models import Chat, Message, MessageRole, User
+from app.models import Chat, Document, DocumentStatus, Message, MessageRole, User
 
 router = APIRouter(prefix="/api/chats/{chat_id}/messages", tags=["messages"])
 
@@ -52,6 +52,20 @@ def _get_owned_chat(db: Session, chat_id: int, user: User) -> Chat:
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+_TITLE_MAX_LENGTH = 50
+_DEFAULT_TITLE = "New chat"
+
+
+def _derive_title(content: str) -> str:
+    """A short chat title from the first message's content, truncated at a
+    word boundary rather than mid-word."""
+    text = content.strip().splitlines()[0]
+    if len(text) <= _TITLE_MAX_LENGTH:
+        return text
+    truncated = text[:_TITLE_MAX_LENGTH].rsplit(" ", 1)[0]
+    return (truncated or text[:_TITLE_MAX_LENGTH]).rstrip() + "..."
 
 
 @router.post("")
@@ -79,21 +93,65 @@ async def send_message(
     # sees a SQLAlchemy Message, satisfying the engine's isolation contract.
     history = [{"role": m.role.value, "content": m.content} for m in chat.messages]
 
+    # Auto-title the chat from its first message, the same way ChatGPT/
+    # Claude do - only when this is genuinely the first message AND the
+    # chat still has the generic default title (never overwrite a title
+    # the user set explicitly when creating the chat).
+    if not history and chat.title == _DEFAULT_TITLE:
+        chat.title = _derive_title(body.content)
+        db.add(chat)
+
     user_message = Message(chat_id=chat_id, role=MessageRole.user, content=body.content)
     db.add(user_message)
     db.commit()
+
+    # Hard gate (code-level, not just a prompt instruction an LLM could be
+    # talked past): if the user has NO ready documents anywhere in the
+    # requested scope, refuse before ever calling the LLM, rather than
+    # letting this endpoint quietly become a generic no-grounding chatbot.
+    # This is a real DB check (not app/engine/*, which has no DB access) -
+    # scoped the same way retrieval itself is scoped below.
+    documents_query = db.query(Document).filter(
+        Document.user_id == current_user.id, Document.status == DocumentStatus.ready
+    )
+    if body.scope == "chat":
+        documents_query = documents_query.filter(Document.chat_id == chat_id)
+    has_any_ready_document = db.query(documents_query.exists()).scalar()
 
     # scope="all" (default): retrieve from every chat this user owns
     # (chat_id=None - no chat_id filter applied in Qdrant). scope="chat":
     # restrict to this chat only. Either way, app/engine/qdrant_client.py's
     # search() always filters by user_id - that part is never optional.
-    retrieved = retrieve(
-        body.content,
-        user_id=current_user.id,
-        chat_id=chat_id if body.scope == "chat" else None,
+    retrieved = (
+        retrieve(
+            body.content,
+            user_id=current_user.id,
+            chat_id=chat_id if body.scope == "chat" else None,
+        )
+        if has_any_ready_document
+        else []
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
+        if not has_any_ready_document:
+            no_docs_message = (
+                "You haven't uploaded any documents yet"
+                + (" for this chat" if body.scope == "chat" else "")
+                + ". Upload a PDF, DOCX, or TXT file using the attach button "
+                "below, then ask a question about it."
+            )
+            yield _sse("token", {"content": no_docs_message})
+            write_db = SessionLocal()
+            try:
+                write_db.add(
+                    Message(chat_id=chat_id, role=MessageRole.assistant, content=no_docs_message)
+                )
+                write_db.commit()
+            finally:
+                write_db.close()
+            yield _sse("done", {})
+            return
+
         full_text = ""
         try:
             async for token in stream_answer(body.content, retrieved, history):
