@@ -62,7 +62,6 @@ export default function HomePage() {
           {status && (
             <div className="flex flex-col gap-2">
               <StatusPill label="Azure OpenAI" ok={status.azure_ai} />
-              <StatusPill label="Google OAuth" ok={status.google_oauth} />
               <StatusPill label="SMTP (email)" ok={status.smtp} />
             </div>
           )}

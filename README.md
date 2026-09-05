@@ -1,16 +1,23 @@
 # querynest
 
-A RAG-powered document chat assistant. Upload documents, and ask questions
-answered strictly from their content, with retrieved passages backing every
-response. Built as a portfolio project to demonstrate a production-shaped
-retrieval-augmented-generation stack: chunking and embedding documents,
-storing vectors in a purpose-built vector database, and grounding an LLM's
-answers in retrieved context rather than letting it hallucinate freely.
+Your own private AI assistant for your own documents. Upload files that are
+yours alone, and get answers grounded strictly in their content — never in
+public training data. General-purpose tools like ChatGPT or Claude have
+never seen this content and can't answer questions about it; querynest
+exists specifically to let you interrogate your own private, secure
+documents without ever sending them to a third-party AI product.
+
+Built as a portfolio project to demonstrate a production-shaped
+retrieval-augmented-generation stack end to end: chunking and embedding
+documents, storing vectors in a purpose-built vector database, and
+grounding an LLM's answers in retrieved context rather than letting it
+hallucinate freely - with every document scoped to the account (and, by
+default, the specific conversation) that uploaded it.
 
 > **Status:** Feature-complete for its intended scope. Document ingestion
 > (PDF/DOCX/TXT → chunk → embed → Qdrant), the RAG chat pipeline (retrieve
 > → stream an Azure OpenAI answer back over Server-Sent Events),
-> authentication (JWT + Google OAuth + forgot-password), and chat/message
+> authentication (JWT + forgot-password), and chat/message
 > history all work end-to-end against the docker-compose stack, backed by
 > an automated test suite (53 tests — see "Running tests" below) covering
 > the multi-tenant isolation boundary, chunking/extraction edge cases, and
@@ -24,13 +31,12 @@ Captured from the actual running docker-compose stack (not mockups) - the
 config-status pattern referenced throughout this README (see "Document
 retrieval scope" and "Environment variables" below) is visible in the
 first and second screenshots exactly as it appears with this deployment's
-real `.env`: Azure OpenAI and SMTP configured, Google OAuth deliberately
-left unset.
+real `.env`: Azure OpenAI and SMTP configured.
 
 | | |
 |---|---|
-| **Home - live config status** | **Login - a "not configured" feature is disabled, not broken** |
-| [![Home page showing the backend configuration status panel](docs/screenshots/home-config-status.png)](docs/screenshots/home-config-status.png) | [![Login page with a disabled Google sign-in button](docs/screenshots/login.png)](docs/screenshots/login.png) |
+| **Home - live config status** | **Login** |
+| [![Home page showing the backend configuration status panel](docs/screenshots/home-config-status.png)](docs/screenshots/home-config-status.png) | [![Login page](docs/screenshots/login.png)](docs/screenshots/login.png) |
 | **Signup** | **Chat - document uploaded and ready** |
 | [![Signup page](docs/screenshots/signup.png)](docs/screenshots/signup.png) | [![Chat UI with a PDF uploaded and its status showing ready](docs/screenshots/chat-document-uploaded.png)](docs/screenshots/chat-document-uploaded.png) |
 | **Chat - a real streamed, cited answer** | |
@@ -101,10 +107,9 @@ how the two modes map to the `scope` field on
 - **Frontend** — React + TypeScript + Vite + Tailwind CSS.
 - **Vector DB** — Qdrant, run locally via docker-compose (or pointed at
   Qdrant Cloud — see below).
-- **Auth** — email/password (JWT access + refresh tokens, `passlib`/bcrypt
-  hashing) and "Sign in with Google" (`authlib`), plus forgot/reset
-  password via SMTP (`aiosmtplib`). See "Authentication & chat history"
-  below.
+- **Auth** — email/password only (JWT access + refresh tokens,
+  `passlib`/bcrypt hashing), plus forgot/reset password via SMTP
+  (`aiosmtplib`). See "Authentication & chat history" below.
 
 ## Document upload + RAG chat flow
 
@@ -202,7 +207,7 @@ querynest/
 │   │   ├── main.tsx              # BrowserRouter + App
 │   │   ├── App.tsx               # route table
 │   │   ├── pages/                # HomePage, Login/Signup/Forgot/Reset, AppShellPage
-│   │   ├── components/           # AuthLayout, GoogleSignInButton, ProtectedRoute, DocumentUpload
+│   │   ├── components/           # AuthLayout, ProtectedRoute, DocumentUpload
 │   │   ├── lib/                  # api client, auth token storage, types, SSE chat stream
 │   │   └── index.css
 │   ├── .env                       # local dev only (gitignored) - VITE_API_BASE_URL
@@ -226,17 +231,16 @@ uploaded document:
    cp .env.example .env
    ```
 3. **Fill in `.env`:**
-   - Azure OpenAI credentials (`AZURE_EM_*` for embeddings,
-     `LLM_ENDPOINT_MINI_MODEL*` for chat) - required for document upload
-     and chat to work; without them, `GET /api/config/status` reports
-     `azure_ai: false` and the upload/message endpoints return a 503
-     instead of crashing (and the frontend shows a "Configuration
-     missing" banner and disables the chat input).
+   - Azure OpenAI credentials (`AZURE_EM_*` for embeddings, `LLM_ENDPOINT*`
+     for chat) - required for document upload and chat to work; without
+     them, `GET /api/config/status` reports `azure_ai: false` and the
+     upload/message endpoints return a 503 instead of crashing (and the
+     frontend shows a "Configuration missing" banner and disables the
+     chat input).
    - A real `JWT_SECRET_KEY` - generate one with
      `python -c "import secrets; print(secrets.token_hex(32))"` (auth
      won't work without one - see "Authentication & chat history" below).
-   - Google OAuth / SMTP values are optional, same 503-instead-of-crash
-     pattern.
+   - SMTP values are optional, same 503-instead-of-crash pattern.
    - `.env` is gitignored — never commit it.
 4. **Bring the whole stack up:**
    ```bash
@@ -356,7 +360,7 @@ container, so nothing needs to be duplicated between the two.
 | `QDRANT_URL`                       | Base URL of the Qdrant instance (local container or Qdrant Cloud)     | Yes |
 | `QDRANT_API_KEY`                   | API key for Qdrant Cloud (leave blank for the local docker-compose container, which has no auth) | Optional |
 | `QDRANT_COLLECTION`                | Name of the Qdrant collection documents are stored in                | Optional (defaults to `querynest_documents`) |
-| `FRONTEND_URL`                     | Frontend origin - used to build password-reset email links and the Google OAuth redirect back into the app | Yes |
+| `FRONTEND_URL`                     | Frontend origin - used to build password-reset email links | Yes |
 | `VITE_API_BASE_URL`                | Read by docker-compose as a **build arg** for the frontend image (Vite inlines `VITE_*` vars at build time, not at container runtime) - the URL the browser uses to reach the backend | Yes, for the docker-compose `frontend` build |
 | `STORAGE_DIR`                       | Where uploaded originals are written on disk, as `{STORAGE_DIR}/{user_id}/{document_id}/original.<ext>` (see `app/api/documents.py`) | Optional (defaults to `storage`, relative to the backend's working directory) |
 | `AZURE_EM_ENDPOINT`                 | Azure OpenAI resource endpoint used for embeddings                     | Optional (needed for document upload + chat) |
@@ -364,16 +368,14 @@ container, so nothing needs to be duplicated between the two.
 | `AZURE_EM_API_VERSION`              | Azure OpenAI API version for the embeddings deployment                | Optional |
 | `AZURE_EM_MODEL`                    | Azure OpenAI embeddings deployment/model name                         | Optional |
 | `AZURE_EM_DIMENSIONS`               | Vector size the embedding deployment returns - sizes the Qdrant collection (`ensure_collection()` in `app/engine/qdrant_client.py`). Confirmed live for this project's deployment: 1536. | Optional (defaults to `1536` in code - `app/engine/azure_client.get_embedding_dimensions()`) |
-| `LLM_ENDPOINT_MINI_MODEL`           | Azure OpenAI resource endpoint used for chat completions               | Optional |
-| `LLM_ENDPOINT_MINI_MODEL_APIKEY`    | API key for the Azure OpenAI chat resource                            | Optional |
-| `MINI_MODEL_NAME`                   | Azure OpenAI chat deployment/model name (e.g. a "mini" model)          | Optional |
-| `LLM_ENDPOINT_MINI_MODEL_API_VERSION` | Azure OpenAI API version for the chat deployment                    | Optional (falls back to `AZURE_EM_API_VERSION`, then a hardcoded default) |
+| `LLM_ENDPOINT`                      | Azure OpenAI resource endpoint used for chat completions               | Optional |
+| `LLM_ENDPOINT_APIKEY`               | API key for the Azure OpenAI chat resource                            | Optional |
+| `LLM_MODEL_NAME`                    | Azure OpenAI chat deployment/model name                               | Optional |
+| `LLM_ENDPOINT_API_VERSION`          | Azure OpenAI API version for the chat deployment                      | Optional (falls back to `AZURE_EM_API_VERSION`, then a hardcoded default) |
 | `JWT_SECRET_KEY`                    | Secret used to sign/verify JWTs - **required** for every auth endpoint (signup/login/refresh/me); generate with `python -c "import secrets; print(secrets.token_hex(32))"` | Yes |
 | `JWT_ALGORITHM`                     | JWT signing algorithm                                                  | Yes (defaults to `HS256`) |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`   | Access token lifetime, in minutes                                     | Yes (defaults to `30`) |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS`     | Refresh token lifetime, in days                                        | Yes (defaults to `7`) |
-| `GOOGLE_CLIENT_ID`                  | Google OAuth client ID (for "Sign in with Google")                    | Optional - `GET /api/auth/google/*` return 503 until both Google vars are set |
-| `GOOGLE_CLIENT_SECRET`              | Google OAuth client secret                                             | Optional |
 | `SMTP_HOST`                         | SMTP server host, for forgot-password emails                          | Optional - `POST /api/auth/forgot-password` returns 503 (`smtp_not_configured`) until all SMTP vars are set |
 | `SMTP_PORT`                         | SMTP server port                                                       | Optional (defaults to `587`) |
 | `SMTP_USERNAME`                     | SMTP auth username                                                     | Optional |
@@ -381,7 +383,7 @@ container, so nothing needs to be duplicated between the two.
 | `SMTP_FROM_EMAIL`                   | "From" address used on outgoing emails                                 | Optional |
 
 `GET /api/config/status`'s `azure_ai` group does **not** check
-`AZURE_EM_DIMENSIONS` (unlike the other `AZURE_EM_*`/`LLM_ENDPOINT_MINI_MODEL*`
+`AZURE_EM_DIMENSIONS` (unlike the other `AZURE_EM_*`/`LLM_ENDPOINT*`
 vars) - it has a sensible code default (`1536`), so a deployment that
 leaves it blank is still considered fully configured. See
 `app/api/config_status.py`'s `CONFIG_GROUPS` and
@@ -389,8 +391,8 @@ leaves it blank is still considered fully configured. See
 
 ## Authentication & chat history
 
-Phase 2 added email/password + Google OAuth authentication (JWT access +
-refresh tokens) and Postgres-backed chat/message history, sitting behind
+Phase 2 added email/password authentication (JWT access + refresh tokens)
+and Postgres-backed chat/message history, sitting behind
 per-user ownership checks that this phase's document retrieval scoping
 builds directly on top of (see "Document retrieval scope" above).
 
@@ -437,8 +439,6 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest \
 | `GET /api/auth/me` | current user (requires `Authorization: Bearer <access_token>`) |
 | `POST /api/auth/forgot-password` | issues a 1-hour `PasswordResetToken` and emails a reset link - **503** (`{"error": "smtp_not_configured", ...}`) if SMTP isn't configured |
 | `POST /api/auth/reset-password` | `{token, new_password}` - 400 if the token is invalid/expired/used |
-| `GET /api/auth/google/login` | redirects to Google's consent screen - **503** if `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` aren't set |
-| `GET /api/auth/google/callback` | exchanges the code, finds-or-creates the `User` by `google_id`/email, then **redirects** to `{FRONTEND_URL}/app?access_token=...&refresh_token=...` (simplest correct approach for a portfolio project - tokens are consumed once from the URL by `AppShellPage` and immediately stripped from the address bar; a production app would likely use a short-lived one-time code instead) |
 
 `GET /api/chats`, `POST /api/chats`, `GET /api/chats/{id}`,
 `DELETE /api/chats/{id}` all require the same bearer token and 404 (not
@@ -500,7 +500,7 @@ The backend exposes `GET /api/config/status` which reports, per group,
 whether every variable in that group is set:
 
 ```json
-{ "azure_ai": true, "google_oauth": false, "smtp": true }
+{ "azure_ai": true, "smtp": true }
 ```
 
 The frontend uses this to show "configuration missing" banners for
@@ -551,7 +551,7 @@ purely-manual verification this project relied on through Phase 3:
 | `test_qdrant_isolation.py` | **The most important test file in this project** - `engine/qdrant_client.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) Qdrant collection: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, and `delete_document()` only removes the targeted document's points. |
 | `test_chunking.py` | `engine/chunking.py` boundary cases - empty/whitespace-only pages, a page just under/at/over the split threshold, a page needing several chunks, a hard character-cut when a single paragraph has no boundary to split on, and `page_number`/`chunk_index` bookkeeping across multiple pages. |
 | `test_extraction.py` | `engine/extraction.py` against real fixture files (`tests/fixtures/sample.pdf`, `sample.txt`) - per-page PDF text via `pdfplumber`, TXT-as-a-single-page, invalid-UTF-8 handling, and `UnsupportedFileTypeError` for an unrecognized/missing extension. |
-| `test_auth_api.py` | `/api/auth/*` integration tests via FastAPI's `TestClient` - signup, duplicate email, login, wrong password, refresh-token type-confusion, and the `jwt_not_configured`/`smtp_not_configured`/`google_oauth_not_configured` 503 gates with those env vars unset. |
+| `test_auth_api.py` | `/api/auth/*` integration tests via FastAPI's `TestClient` - signup, duplicate email, login, wrong password, refresh-token type-confusion, and the `jwt_not_configured`/`smtp_not_configured` 503 gates with those env vars unset. |
 | `test_chats_api.py` | `/api/chats/*` ownership checks - a chat belonging to another user 404s (indistinguishable from one that never existed), scoped listing, delete. |
 | `test_documents_api.py` | `/api/chats/{id}/documents/*` ownership checks plus the upload → status transition (`processing` → `ready`/`failed`), with `azure_ai_configured`/`ingest_document` monkeypatched to deterministic fakes so the test targets the endpoint's own status-transition logic rather than making a real Azure OpenAI call. |
 
@@ -601,8 +601,8 @@ to this project's code - not failures.)
 
 - **Phase 1:** repo scaffold, docker-compose, health/config endpoints.
 - **Phase 2:** database models + Alembic migrations, authentication (JWT +
-  Google OAuth + forgot-password via SMTP), chat/message history CRUD,
-  and the frontend auth + chat-shell pages.
+  forgot-password via SMTP), chat/message history CRUD, and the frontend
+  auth + chat-shell pages.
 - **Phase 3:** the `app/engine/` RAG package (extraction, chunking, Azure
   OpenAI embeddings/chat, Qdrant storage/search with per-user isolation
   and an opt-in per-chat retrieval scope), document upload/list/delete

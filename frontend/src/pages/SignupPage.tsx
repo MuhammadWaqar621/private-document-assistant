@@ -3,7 +3,6 @@ import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import AuthLayout from "../components/AuthLayout";
-import GoogleSignInButton from "../components/GoogleSignInButton";
 import { ApiError, api } from "../lib/api";
 import { setTokens } from "../lib/auth";
 
@@ -112,14 +111,6 @@ export default function SignupPage() {
           {submitting ? "Creating account..." : "Sign up"}
         </button>
       </form>
-
-      <div className="my-4 flex items-center gap-3 text-xs text-slate-400">
-        <div className="h-px flex-1 bg-slate-200" />
-        or
-        <div className="h-px flex-1 bg-slate-200" />
-      </div>
-
-      <GoogleSignInButton />
 
       <p className="mt-5 text-center text-sm text-slate-500">
         Already have an account?{" "}

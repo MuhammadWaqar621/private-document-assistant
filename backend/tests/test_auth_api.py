@@ -1,5 +1,5 @@
 """Integration tests for /api/auth/* - signup/login/duplicate-email/
-wrong-password, plus the JWT/SMTP/Google 503 "not configured" gates.
+wrong-password, plus the JWT/SMTP 503 "not configured" gates.
 
 Uses the `client` fixture from conftest.py (TestClient + in-memory
 SQLite) - see conftest.py's module docstring for why SQLite is the right
@@ -114,7 +114,7 @@ def test_refresh_rejects_an_access_token_used_as_a_refresh_token(client):
     assert response.status_code == 401
 
 
-# --- config-gated 503s: JWT / SMTP / Google -------------------------------
+# --- config-gated 503s: JWT / SMTP ----------------------------------------
 
 
 def test_signup_returns_503_when_jwt_not_configured(client, monkeypatch):
@@ -158,25 +158,12 @@ def test_forgot_password_returns_503_when_smtp_not_configured(client, monkeypatc
     assert response.json()["detail"]["error"] == "smtp_not_configured"
 
 
-def test_google_login_returns_503_when_google_oauth_not_configured(client, monkeypatch):
-    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
-    get_settings.cache_clear()
-
-    response = client.get("/api/auth/google/login", follow_redirects=False)
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["error"] == "google_oauth_not_configured"
-
-
 def test_config_status_reflects_unset_groups(client, monkeypatch):
-    for var in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "SMTP_HOST"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
     get_settings.cache_clear()
 
     response = client.get("/api/config/status")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["google_oauth"] is False
     assert body["smtp"] is False

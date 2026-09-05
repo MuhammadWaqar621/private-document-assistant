@@ -68,7 +68,7 @@ async def send_message(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "error": "azure_ai_not_configured",
-                "message": "Azure OpenAI is not configured. Set AZURE_EM_*/LLM_ENDPOINT_MINI_MODEL* in .env.",
+                "message": "Azure OpenAI is not configured. Set AZURE_EM_*/LLM_ENDPOINT* in .env.",
             },
         )
 

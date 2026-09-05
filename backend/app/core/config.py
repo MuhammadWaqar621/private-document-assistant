@@ -16,8 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Central application settings.
 
-    Grouped roughly by concern. Auth-related settings (JWT, Google OAuth,
-    SMTP) back the endpoints in app/api/auth.py - each optional group is
+    Grouped roughly by concern. Auth-related settings (JWT, SMTP) back the
+    endpoints in app/api/auth.py - each optional group is
     considered "configured" only once every variable in it is set (see
     app/api/config_status.py), and the endpoints that depend on an
     unconfigured group return a clear 503 rather than crashing.
@@ -60,19 +60,15 @@ class Settings(BaseSettings):
     AZURE_EM_DIMENSIONS: str = "1536"
 
     # --- Azure OpenAI - Chat (mini model) -----------------------------------
-    LLM_ENDPOINT_MINI_MODEL: Optional[str] = None
-    LLM_ENDPOINT_MINI_MODEL_APIKEY: Optional[str] = None
-    MINI_MODEL_NAME: Optional[str] = None
+    LLM_ENDPOINT: Optional[str] = None
+    LLM_ENDPOINT_APIKEY: Optional[str] = None
+    LLM_MODEL_NAME: Optional[str] = None
 
     # --- JWT (auth) ----------------------------------------------------------
     JWT_SECRET_KEY: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-
-    # --- Google OAuth ("Sign in with Google") ---------------------------------
-    GOOGLE_CLIENT_ID: Optional[str] = None
-    GOOGLE_CLIENT_SECRET: Optional[str] = None
 
     # --- SMTP (forgot-password emails) ---------------------------------------
     SMTP_HOST: Optional[str] = None

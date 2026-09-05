@@ -12,8 +12,8 @@ duplicated - this module just doesn't *import* the app's settings module.
 Two separate Azure OpenAI deployments are used:
   - embeddings: AZURE_EM_ENDPOINT / AZURE_EM_API_KEY / AZURE_EM_API_VERSION
     / AZURE_EM_MODEL
-  - chat (a "mini" model): LLM_ENDPOINT_MINI_MODEL /
-    LLM_ENDPOINT_MINI_MODEL_APIKEY / MINI_MODEL_NAME
+  - chat (any Azure OpenAI chat deployment): LLM_ENDPOINT /
+    LLM_ENDPOINT_APIKEY / LLM_MODEL_NAME
 
 AZURE_EM_DIMENSIONS configures the embedding vector size used when creating
 the Qdrant collection (see qdrant_client.py) - Azure text-embedding models
@@ -32,7 +32,7 @@ DEFAULT_EMBEDDING_DIMENSIONS = 1536
 # Fallback chat api_version when the deployment doesn't set its own - Azure
 # OpenAI chat completions don't need a version as recent as embeddings do,
 # but the client requires *some* value. Override via
-# LLM_ENDPOINT_MINI_MODEL_API_VERSION if a specific deployment needs it.
+# LLM_ENDPOINT_API_VERSION if a specific deployment needs it.
 DEFAULT_CHAT_API_VERSION = "2024-08-01-preview"
 
 
@@ -70,13 +70,13 @@ def get_embedding_config() -> Optional[EmbeddingConfig]:
 
 
 def get_chat_config() -> Optional[ChatConfig]:
-    endpoint = _clean(os.getenv("LLM_ENDPOINT_MINI_MODEL"))
-    api_key = _clean(os.getenv("LLM_ENDPOINT_MINI_MODEL_APIKEY"))
-    model = _clean(os.getenv("MINI_MODEL_NAME"))
+    endpoint = _clean(os.getenv("LLM_ENDPOINT"))
+    api_key = _clean(os.getenv("LLM_ENDPOINT_APIKEY"))
+    model = _clean(os.getenv("LLM_MODEL_NAME"))
     if not (endpoint and api_key and model):
         return None
     api_version = (
-        _clean(os.getenv("LLM_ENDPOINT_MINI_MODEL_API_VERSION"))
+        _clean(os.getenv("LLM_ENDPOINT_API_VERSION"))
         or _clean(os.getenv("AZURE_EM_API_VERSION"))
         or DEFAULT_CHAT_API_VERSION
     )
@@ -121,7 +121,7 @@ def get_async_chat_client() -> AsyncAzureOpenAI:
     config = get_chat_config()
     if config is None:
         raise RuntimeError(
-            "Azure OpenAI chat is not configured (LLM_ENDPOINT_MINI_MODEL* env vars)."
+            "Azure OpenAI chat is not configured (LLM_ENDPOINT* env vars)."
         )
     return AsyncAzureOpenAI(
         azure_endpoint=config.endpoint,

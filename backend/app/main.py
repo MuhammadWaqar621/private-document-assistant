@@ -1,17 +1,15 @@
 """
 querynest backend entrypoint.
 
-Phase 2 added authentication (email/password + Google OAuth) and
-chat/message history (Postgres). This phase adds document ingestion
-(app/api/documents.py) and the actual RAG chat/retrieval logic
-(app/api/messages.py) - both orchestrate between the DB/auth stack and the
-independent app/engine/ package (see app/engine/__init__.py for its
-isolation contract).
+Phase 2 added authentication (email/password) and chat/message history
+(Postgres). This phase adds document ingestion (app/api/documents.py) and
+the actual RAG chat/retrieval logic (app/api/messages.py) - both
+orchestrate between the DB/auth stack and the independent app/engine/
+package (see app/engine/__init__.py for its isolation contract).
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.chats import router as chats_router
@@ -24,7 +22,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="querynest API",
-    description="RAG-powered document chat assistant - backend API",
+    description="Private, secure document chat assistant - backend API",
     version="0.3.0",
 )
 
@@ -36,16 +34,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-# Required by authlib's Google OAuth client (app/api/auth.py) to stash the
-# CSRF `state` between /google/login and /google/callback. The secret only
-# needs to be stable for the lifetime of that short redirect round-trip,
-# so falling back to a fixed dev value when JWT_SECRET_KEY isn't set yet
-# is fine - Google sign-in itself is already gated off (503) in that case.
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.JWT_SECRET_KEY or "dev-insecure-session-secret-change-me",
 )
 
 app.include_router(config_status_router)

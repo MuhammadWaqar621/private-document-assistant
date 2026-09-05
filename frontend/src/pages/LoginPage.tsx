@@ -1,9 +1,8 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import AuthLayout from "../components/AuthLayout";
-import GoogleSignInButton from "../components/GoogleSignInButton";
 import { ApiError, api } from "../lib/api";
 import { setTokens } from "../lib/auth";
 
@@ -18,8 +17,6 @@ const inputClass =
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const oauthError = searchParams.get("error");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -47,12 +44,6 @@ export default function LoginPage() {
 
   return (
     <AuthLayout title="Log in" subtitle="Welcome back.">
-      {oauthError === "google_oauth_failed" && (
-        <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Google sign-in didn't complete. Please try again or use email/password.
-        </p>
-      )}
-
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
           <label htmlFor="email" className="mb-1 block text-sm font-medium text-slate-700">
@@ -94,14 +85,6 @@ export default function LoginPage() {
           {submitting ? "Logging in..." : "Log in"}
         </button>
       </form>
-
-      <div className="my-4 flex items-center gap-3 text-xs text-slate-400">
-        <div className="h-px flex-1 bg-slate-200" />
-        or
-        <div className="h-px flex-1 bg-slate-200" />
-      </div>
-
-      <GoogleSignInButton />
 
       <div className="mt-5 flex flex-col gap-1 text-center text-sm text-slate-500">
         <Link to="/forgot-password" className="hover:text-slate-700">

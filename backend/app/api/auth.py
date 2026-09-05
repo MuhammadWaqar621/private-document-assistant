@@ -1,18 +1,16 @@
 """
-Authentication endpoints: email/password signup+login, JWT refresh,
-forgot/reset-password (via SMTP), and "Sign in with Google" (via authlib).
+Authentication endpoints: email/password signup+login, JWT refresh, and
+forgot/reset-password (via SMTP).
 
-Google OAuth and SMTP email both depend on env vars that may not be set in
-every deployment (see app/api/config_status.py) - the endpoints that need
-them check first and return a clear 503 JSON error instead of crashing,
+SMTP email delivery depends on env vars that may not be set in every
+deployment (see app/api/config_status.py) - the endpoints that need it
+check first and return a clear 503 JSON error instead of crashing,
 mirroring the config-status pattern used elsewhere in this project.
 """
 
 from datetime import datetime, timedelta, timezone
 
-from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
 from jose import JWTError
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -231,106 +229,3 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)) ->
     db.commit()
 
     return MessageResponse(message="Password updated. You can now log in with your new password.")
-
-
-# --- Google OAuth ----------------------------------------------------------
-
-
-def _google_client(settings: Settings) -> OAuth:
-    """Build a fresh authlib OAuth registry for Google.
-
-    Registered lazily (rather than at import time) so a deployment without
-    GOOGLE_CLIENT_ID/SECRET never touches authlib's registration at all.
-    Endpoints are hardcoded (rather than using Google's discovery document)
-    to avoid an extra network round-trip to accounts.google.com on every
-    login/callback.
-    """
-    oauth = OAuth()
-    oauth.register(
-        name="google",
-        client_id=settings.GOOGLE_CLIENT_ID,
-        client_secret=settings.GOOGLE_CLIENT_SECRET,
-        access_token_url="https://oauth2.googleapis.com/token",
-        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-        api_base_url="https://openidconnect.googleapis.com/v1/",
-        client_kwargs={"scope": "openid email profile"},
-    )
-    return oauth.google
-
-
-def _google_configured(settings: Settings) -> bool:
-    return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET)
-
-
-@router.get("/google/login")
-async def google_login(request: Request, settings: Settings = Depends(get_settings)):
-    if not _google_configured(settings):
-        raise _service_unavailable(
-            "google_oauth_not_configured",
-            "Google sign-in is not configured. Set GOOGLE_CLIENT_ID and "
-            "GOOGLE_CLIENT_SECRET in .env.",
-        )
-
-    google = _google_client(settings)
-    redirect_uri = str(request.url_for("google_callback"))
-    return await google.authorize_redirect(request, redirect_uri)
-
-
-@router.get("/google/callback", name="google_callback")
-async def google_callback(
-    request: Request,
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-):
-    if not _google_configured(settings):
-        raise _service_unavailable(
-            "google_oauth_not_configured",
-            "Google sign-in is not configured. Set GOOGLE_CLIENT_ID and "
-            "GOOGLE_CLIENT_SECRET in .env.",
-        )
-
-    google = _google_client(settings)
-
-    try:
-        token = await google.authorize_access_token(request)
-        resp = await google.get("userinfo", token=token)
-        userinfo = resp.json()
-    except Exception as exc:  # noqa: BLE001 - any OAuth failure -> readable redirect, not a 500
-        error_url = f"{settings.FRONTEND_URL}/login?error=google_oauth_failed"
-        return RedirectResponse(url=error_url)
-
-    google_id = userinfo.get("sub")
-    email = userinfo.get("email")
-
-    if not google_id or not email or not userinfo.get("email_verified"):
-        # email_verified=False means Google itself hasn't confirmed this
-        # account controls that mailbox - trusting it to link to an
-        # existing password-based account would let an attacker with an
-        # unverified Google identity for the victim's email take over
-        # that account's login.
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=google_oauth_failed")
-
-    user = db.query(User).filter(User.google_id == google_id).first()
-    if user is None:
-        # Link to an existing password-based account with the same email,
-        # otherwise create a fresh Google-only account.
-        user = db.query(User).filter(User.email == email).first()
-        if user is None:
-            user = User(email=email, google_id=google_id)
-            db.add(user)
-        else:
-            user.google_id = google_id
-        db.commit()
-        db.refresh(user)
-
-    tokens = _tokens_for(user)
-    # Delivered via a URL fragment (#...), not a query string (?...): the
-    # fragment is never sent to any server (this one or a CDN/proxy in
-    # front of the frontend), so it can't end up in access logs the way a
-    # query-string token would. The frontend reads it client-side and
-    # strips it from the URL immediately (see AppShellPage.tsx).
-    redirect_url = (
-        f"{settings.FRONTEND_URL}/app"
-        f"#access_token={tokens.access_token}&refresh_token={tokens.refresh_token}"
-    )
-    return RedirectResponse(url=redirect_url)

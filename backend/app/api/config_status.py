@@ -4,8 +4,8 @@ Config-status endpoint.
 Exposes which groups of environment-driven configuration are fully
 populated. The frontend uses this to show "configuration missing" banners
 for features that depend on secrets which aren't provided yet (Azure
-OpenAI, Google OAuth, SMTP). A group is only reported as configured
-(`true`) when every variable in that group is set to a non-empty value.
+OpenAI, SMTP). A group is only reported as configured (`true`) when every
+variable in that group is set to a non-empty value.
 """
 
 from fastapi import APIRouter
@@ -34,13 +34,9 @@ CONFIG_GROUPS: dict[str, list[str]] = {
         "AZURE_EM_API_KEY",
         "AZURE_EM_API_VERSION",
         "AZURE_EM_MODEL",
-        "LLM_ENDPOINT_MINI_MODEL",
-        "LLM_ENDPOINT_MINI_MODEL_APIKEY",
-        "MINI_MODEL_NAME",
-    ],
-    "google_oauth": [
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET",
+        "LLM_ENDPOINT",
+        "LLM_ENDPOINT_APIKEY",
+        "LLM_MODEL_NAME",
     ],
     "smtp": [
         "SMTP_HOST",
@@ -57,7 +53,7 @@ def get_config_status() -> dict[str, bool]:
     """Return which configuration groups are fully populated.
 
     Example response:
-        {"azure_ai": true, "google_oauth": false, "smtp": false}
+        {"azure_ai": true, "smtp": false}
     """
     settings = get_settings()
     return {

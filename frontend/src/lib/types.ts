@@ -1,6 +1,5 @@
 export type ConfigStatus = {
   azure_ai: boolean;
-  google_oauth: boolean;
   smtp: boolean;
 };
 

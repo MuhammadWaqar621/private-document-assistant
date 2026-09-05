@@ -5,8 +5,8 @@ import type { ConfigStatus } from "./types";
 
 /**
  * Fetches GET /api/config/status once. Used to hide/disable features that
- * depend on backend config which may not be set (Google OAuth button,
- * SMTP-dependent messaging).
+ * depend on backend config which may not be set (SMTP-dependent
+ * messaging, the Azure AI-backed chat/upload flow).
  */
 export function useConfigStatus(): { status: ConfigStatus | null; error: string | null } {
   const [status, setStatus] = useState<ConfigStatus | null>(null);
