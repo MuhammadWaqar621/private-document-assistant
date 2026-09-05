@@ -19,7 +19,7 @@ bcrypt==4.0.1
 python-jose[cryptography]==3.4.0
 authlib==1.6.12
 httpx==0.28.1
-aiosmtplib==3.0.2
+aiosmtplib==5.1.2
 itsdangerous==2.2.0
 
 # Document ingestion / RAG engine (this phase): PDF/DOCX text extraction
