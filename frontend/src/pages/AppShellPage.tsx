@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import DocumentUpload from "../components/DocumentUpload";
 import { ApiError, api } from "../lib/api";
@@ -18,7 +18,6 @@ import type { Chat, ChatDetail, CurrentUser, DocumentOut } from "../lib/types";
  */
 export default function AppShellPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const { status: configStatus } = useConfigStatus();
 
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -40,20 +39,26 @@ export default function AppShellPage() {
   const [chatScopeOnly, setChatScopeOnly] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Google OAuth redirects back here as /app?access_token=...&refresh_token=...
-  // Consume them once, then strip from the URL so a refresh/bookmark
-  // doesn't resubmit stale tokens.
+  // Google OAuth redirects back here as /app#access_token=...&refresh_token=...
+  // A URL fragment (not a query string) so the tokens are never sent to
+  // any server - the browser keeps them client-side only. Consume them
+  // once, then strip from the URL so a refresh/bookmark doesn't resubmit
+  // stale tokens.
   const consumedOAuthTokens = useRef(false);
   useEffect(() => {
     if (consumedOAuthTokens.current) return;
-    const accessToken = searchParams.get("access_token");
-    const refreshToken = searchParams.get("refresh_token");
+    const hash = window.location.hash.startsWith("#")
+      ? window.location.hash.slice(1)
+      : window.location.hash;
+    const hashParams = new URLSearchParams(hash);
+    const accessToken = hashParams.get("access_token");
+    const refreshToken = hashParams.get("refresh_token");
     if (accessToken && refreshToken) {
       setTokens(accessToken, refreshToken);
       consumedOAuthTokens.current = true;
       navigate("/app", { replace: true });
     }
-  }, [searchParams, navigate]);
+  }, [navigate]);
 
   const handleAuthFailure = useCallback(() => {
     clearTokens();

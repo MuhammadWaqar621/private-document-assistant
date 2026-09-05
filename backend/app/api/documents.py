@@ -39,6 +39,13 @@ router = APIRouter(prefix="/api/chats/{chat_id}/documents", tags=["documents"])
 # restarts without a dedicated volume.
 STORAGE_ROOT = Path(os.getenv("STORAGE_DIR", "storage"))
 
+# The on-disk extension is chosen from this fixed allow-list, never taken
+# verbatim from the client-supplied filename - a filename like
+# "x.txt/../../../etc/whatever" would otherwise let its "extension"
+# (everything after the last ".") inject path separators/".." segments
+# into the storage path built below.
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt"}
+
 
 # --- Schemas -----------------------------------------------------------------
 
@@ -109,7 +116,8 @@ async def upload_document(
     db.commit()
     db.refresh(document)
 
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    raw_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    ext = raw_ext if raw_ext in ALLOWED_EXTENSIONS else "bin"
     doc_dir = STORAGE_ROOT / str(current_user.id) / str(document.id)
     doc_dir.mkdir(parents=True, exist_ok=True)
     storage_path = doc_dir / f"original.{ext}"

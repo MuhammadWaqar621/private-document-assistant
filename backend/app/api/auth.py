@@ -302,7 +302,12 @@ async def google_callback(
     google_id = userinfo.get("sub")
     email = userinfo.get("email")
 
-    if not google_id or not email:
+    if not google_id or not email or not userinfo.get("email_verified"):
+        # email_verified=False means Google itself hasn't confirmed this
+        # account controls that mailbox - trusting it to link to an
+        # existing password-based account would let an attacker with an
+        # unverified Google identity for the victim's email take over
+        # that account's login.
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=google_oauth_failed")
 
     user = db.query(User).filter(User.google_id == google_id).first()
@@ -319,8 +324,13 @@ async def google_callback(
         db.refresh(user)
 
     tokens = _tokens_for(user)
+    # Delivered via a URL fragment (#...), not a query string (?...): the
+    # fragment is never sent to any server (this one or a CDN/proxy in
+    # front of the frontend), so it can't end up in access logs the way a
+    # query-string token would. The frontend reads it client-side and
+    # strips it from the URL immediately (see AppShellPage.tsx).
     redirect_url = (
         f"{settings.FRONTEND_URL}/app"
-        f"?access_token={tokens.access_token}&refresh_token={tokens.refresh_token}"
+        f"#access_token={tokens.access_token}&refresh_token={tokens.refresh_token}"
     )
     return RedirectResponse(url=redirect_url)
