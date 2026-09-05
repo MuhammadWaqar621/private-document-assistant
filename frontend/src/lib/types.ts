@@ -27,3 +27,13 @@ export type ChatMessage = {
 export type ChatDetail = Chat & {
   messages: ChatMessage[];
 };
+
+export type DocumentStatus = "processing" | "ready" | "failed";
+
+export type DocumentOut = {
+  id: number;
+  filename: string;
+  status: DocumentStatus;
+  error_message: string | null;
+  created_at: string;
+};

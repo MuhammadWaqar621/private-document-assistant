@@ -7,52 +7,66 @@ retrieval-augmented-generation stack: chunking and embedding documents,
 storing vectors in a purpose-built vector database, and grounding an LLM's
 answers in retrieved context rather than letting it hallucinate freely.
 
-> **Status:** Phase 2 — authentication (email/password + Google OAuth) and
-> chat/message history are implemented on top of the Phase 1 scaffold
+> **Status:** Phase 3 — document ingestion (PDF/DOCX/TXT → chunk → embed →
+> Qdrant) and the actual RAG chat pipeline (retrieve → stream an Azure
+> OpenAI answer back over Server-Sent Events) are implemented on top of
+> the Phase 2 scaffold (auth, chat/message history) and Phase 1 scaffold
 > (FastAPI backend, React frontend, Postgres, and Qdrant wired together via
-> docker-compose). Document ingestion and the actual chat/retrieval (RAG)
-> pipeline - i.e. sending a message and getting an AI answer back - are
-> built in a later phase.
+> docker-compose). Uploading a document and asking a question about it now
+> works end-to-end. What's still ahead: a full polished end-to-end Docker
+> demo pass with screenshots, and an automated test suite (see Roadmap).
 
 ## Architecture
 
-```
-                          ┌──────────────────┐
-                          │   Frontend        │
-                          │   React + Vite    │
-                          │   + TypeScript    │
-                          │   + Tailwind      │
-                          └────────┬──────────┘
-                                   │ HTTP (/api/*)
-                                   ▼
-                          ┌──────────────────┐
-                          │   Backend         │
-                          │   FastAPI         │
-                          │   SQLAlchemy      │
-                          │   + Alembic       │
-                          └───┬──────────┬────┘
-                              │          │
-                 ┌────────────┘          └────────────┐
-                 ▼                                     ▼
-        ┌──────────────────┐                 ┌──────────────────┐
-        │   Postgres        │                 │   Qdrant          │
-        │   (relational     │                 │   (vector store   │
-        │   data: users,    │                 │   for document    │
-        │   documents,      │                 │   embeddings)     │
-        │   chat history)   │                 │                   │
-        └──────────────────┘                 └──────────────────┘
+```mermaid
+flowchart TB
+    subgraph Client
+        FE["Frontend<br/>React + Vite + TypeScript + Tailwind"]
+    end
 
-        Backend also talks to Azure OpenAI (via the Azure OpenAI client
-        in the `openai` SDK) for:
-          - text embeddings  (AZURE_EM_* settings)
-          - chat completions (LLM_ENDPOINT_MINI_MODEL* settings)
+    subgraph Backend["Backend - FastAPI"]
+        API["API layer<br/>app/api/*.py<br/>auth, ownership checks,<br/>DB persistence, SSE streaming"]
+        ENGINE["engine/ package<br/>extraction · chunking · embedding<br/>Qdrant search · RAG prompt/streaming<br/>(zero dependency on API/DB/auth code)"]
+    end
+
+    PG[("Postgres<br/>users, chats, messages,<br/>documents (status/metadata)")]
+    QD[("Qdrant<br/>vector store<br/>every point tagged with<br/>user_id + chat_id")]
+    AZ["Azure OpenAI<br/>embeddings + chat completions"]
+
+    FE -- "HTTP /api/* + SSE" --> API
+    API -- "plain args in, plain data out" --> ENGINE
+    API -- "SQLAlchemy" --> PG
+    ENGINE -- "vector upsert/search,<br/>filtered by user_id+chat_id" --> QD
+    ENGINE -- "embeddings + chat completions" --> AZ
 ```
+
+**Per-chat document isolation:** a document uploaded in one chat is only
+ever retrievable from *that* chat, for *that* user. This isn't just a UI
+convention - it's enforced twice: the `documents` table's `chat_id`/
+`user_id` columns scope every DB query in the API layer, and every point
+stored in Qdrant carries the same `chat_id`/`user_id` in its payload, with
+`engine/qdrant_client.py`'s `search()` applying both as **required**
+(`must`) filter conditions on every vector search - not an application-
+level convention that could be forgotten in one code path, but the actual
+query sent to the vector database every single time.
 
 - **Backend** — Python 3.11+, FastAPI, SQLAlchemy + Alembic for migrations,
-  Postgres for relational data (users, documents, chat sessions), Qdrant
+  Postgres for relational data (users, chats, messages, documents), Qdrant
   for vector search. AI calls go through `openai.AzureOpenAI` /
   `AsyncAzureOpenAI` — this project targets **Azure OpenAI** specifically,
   not the public OpenAI API.
+- **`app/engine/`** — the RAG engine (extraction, chunking, embedding,
+  Qdrant access, retrieval, streaming chat) is a self-contained package
+  with **zero imports** from `app/api`, `app/models` (SQLAlchemy), or auth
+  code. It reads its own configuration straight from environment
+  variables and every function takes/returns plain Python values (ints,
+  strings, bytes, dicts/dataclasses) — never an ORM object or a FastAPI
+  Request/Response. This makes it independently testable and reusable
+  outside this specific FastAPI app. `app/api/documents.py` and
+  `app/api/messages.py` are the *only* code that talks to both the DB/auth
+  stack and `app/engine/` — they check auth/ownership, call a plain engine
+  function, and persist the result. See `app/engine/__init__.py` for the
+  full isolation contract.
 - **Frontend** — React + TypeScript + Vite + Tailwind CSS.
 - **Vector DB** — Qdrant, run locally via docker-compose (or pointed at
   Qdrant Cloud — see below).
@@ -60,6 +74,53 @@ answers in retrieved context rather than letting it hallucinate freely.
   hashing) and "Sign in with Google" (`authlib`), plus forgot/reset
   password via SMTP (`aiosmtplib`). See "Authentication & chat history"
   below.
+
+## Document upload + RAG chat flow
+
+1. **Upload** — `POST /api/chats/{chat_id}/documents` (multipart) saves
+   the raw file to `storage/{user_id}/{document_id}/original.<ext>`,
+   creates a `Document` row (`status=processing`), then runs ingestion:
+   - `app/engine/extraction.py` pulls text out of the file - one entry per
+     page for PDF (`pdfplumber`), a single page for TXT, and for DOCX
+     (which has no native page concept) paragraphs are grouped into
+     synthetic ~2000-character "pages" so citations still have a stable
+     unit to point at (this won't match Word's own page numbers).
+   - `app/engine/chunking.py` splits page text into ~500-800 token
+     (~2000-3200 character) chunks, char-based approximation, only
+     splitting pages that are unusually long.
+   - `app/engine/ingestion.py` embeds each chunk in batches via the Azure
+     embeddings deployment and upserts them into Qdrant
+     (`app/engine/qdrant_client.py`), tagged with `document_id`,
+     `user_id`, `chat_id`, `filename`, and `page_number`.
+   - On success the `Document` row becomes `status=ready`; on any failure
+     (unsupported file type, extraction error, embedding/Qdrant failure)
+     it becomes `status=failed` with a human-readable `error_message` -
+     the upload request itself never crashes.
+2. **Ask a question** — `POST /api/chats/{chat_id}/messages` persists the
+   user's message, calls `app/engine/rag.retrieve()` (embed the question,
+   search Qdrant filtered to this `user_id`+`chat_id`), then
+   `app/engine/rag.stream_answer()` streams the Azure chat completion back
+   token-by-token over **Server-Sent Events** (`text/event-stream`) - real
+   incremental tokens, not a spinner followed by the whole answer at once.
+   Once the stream finishes, the full assistant reply is persisted as a
+   `Message` row (`role=assistant`).
+3. **Frontend** — the chat input uses a manual `fetch` + `ReadableStream`
+   reader (not the browser `EventSource` API, which can't attach a Bearer
+   token header) to render tokens as they arrive; see
+   `frontend/src/lib/chatStream.ts`.
+
+### Synchronous ingestion (a deliberate tradeoff)
+
+Ingestion runs **inside** the upload request, synchronously - simplest
+thing that works for a portfolio project, and small test documents ingest
+in a couple of seconds. A production deployment would instead push
+ingestion onto a background worker (Celery, RQ, or arq) backed by a queue
+(Redis/SQS/etc.), respond to the upload immediately with
+`status=processing`, and let the client poll `GET
+/api/chats/{chat_id}/documents` (or a websocket/SSE status channel) until
+it flips to `ready`/`failed`. That upgrade is scoped out here deliberately
+to keep the moving parts to a minimum while every part that *is* here
+still works exactly like it would in a bigger system.
 
 ## Repository layout
 
@@ -75,11 +136,20 @@ querynest/
 │   │   ├── db/
 │   │   │   ├── base_class.py    # SQLAlchemy declarative Base
 │   │   │   └── session.py       # engine/session, get_db dependency
-│   │   ├── models/               # SQLAlchemy models (User, Chat, Message, ...)
+│   │   ├── models/               # SQLAlchemy models (User, Chat, Message, Document, ...)
+│   │   ├── engine/               # AI/RAG engine - zero deps on api/models/auth (see above)
+│   │   │   ├── azure_client.py  # Azure OpenAI client construction (embeddings + chat)
+│   │   │   ├── extraction.py    # file bytes -> [(page_number, text), ...]
+│   │   │   ├── chunking.py      # page text -> embedding-sized chunks
+│   │   │   ├── qdrant_client.py # vector storage/search, user_id+chat_id isolation
+│   │   │   ├── ingestion.py     # extract -> chunk -> embed -> upsert (no DB writes)
+│   │   │   └── rag.py           # retrieve() + stream_answer() for the chat endpoint
 │   │   └── api/
 │   │       ├── config_status.py # GET /api/config/status
 │   │       ├── auth.py          # /api/auth/* (signup/login/refresh/...)
 │   │       ├── chats.py         # /api/chats/* (CRUD, auth-protected)
+│   │       ├── documents.py     # /api/chats/{id}/documents/* (upload/list/delete)
+│   │       ├── messages.py      # /api/chats/{id}/messages (send + stream RAG answer)
 │   │       └── deps.py          # get_current_user dependency
 │   ├── alembic/                  # migrations (env.py reads DATABASE_URL from Settings)
 │   ├── alembic.ini
@@ -90,8 +160,8 @@ querynest/
 │   │   ├── main.tsx              # BrowserRouter + App
 │   │   ├── App.tsx               # route table
 │   │   ├── pages/                # HomePage, Login/Signup/Forgot/Reset, AppShellPage
-│   │   ├── components/           # AuthLayout, GoogleSignInButton, ProtectedRoute
-│   │   ├── lib/                  # api client, auth token storage, types
+│   │   ├── components/           # AuthLayout, GoogleSignInButton, ProtectedRoute, DocumentUpload
+│   │   ├── lib/                  # api client, auth token storage, types, SSE chat stream
 │   │   └── index.css
 │   ├── .env                       # local dev only (gitignored) - VITE_API_BASE_URL
 │   ├── package.json
@@ -105,26 +175,50 @@ querynest/
 
 ## Getting started
 
-1. Copy the example env file:
+A step-by-step path from a fresh clone to actually chatting with an
+uploaded document:
+
+1. **Clone the repo** and `cd` into it.
+2. **Copy the example env file:**
    ```bash
    cp .env.example .env
    ```
-2. Fill in your Azure OpenAI credentials, and generate a real
-   `JWT_SECRET_KEY` (auth won't work without one - see "Authentication &
-   chat history" below). Google OAuth / SMTP values are optional; the
-   features that need them return a clear 503 instead of crashing when
-   they're blank. `.env` is gitignored — never commit it.
-3. Bring the whole stack up:
+3. **Fill in `.env`:**
+   - Azure OpenAI credentials (`AZURE_EM_*` for embeddings,
+     `LLM_ENDPOINT_MINI_MODEL*` for chat) - required for document upload
+     and chat to work; without them, `GET /api/config/status` reports
+     `azure_ai: false` and the upload/message endpoints return a 503
+     instead of crashing (and the frontend shows a "Configuration
+     missing" banner and disables the chat input).
+   - A real `JWT_SECRET_KEY` - generate one with
+     `python -c "import secrets; print(secrets.token_hex(32))"` (auth
+     won't work without one - see "Authentication & chat history" below).
+   - Google OAuth / SMTP values are optional, same 503-instead-of-crash
+     pattern.
+   - `.env` is gitignored — never commit it.
+4. **Bring the whole stack up:**
    ```bash
    docker-compose up --build
    ```
-4. Run the database migrations (creates users/chats/messages/
-   password_reset_tokens tables - see below):
+5. **Run the database migrations** (creates users/chats/messages/
+   password_reset_tokens/documents tables - see below):
    ```bash
    docker-compose exec backend alembic upgrade head
    ```
-5. Visit:
-   - Frontend: http://localhost:4173
+6. **Use the app:**
+   - Visit http://localhost:4173, sign up, and you'll land on `/app`.
+   - Click **+ New chat**, then drag a `.pdf`/`.docx`/`.txt` file onto the
+     upload widget at the top of the chat. Watch its status go
+     `processing` → `ready` (or `failed`, with a reason, if something
+     went wrong).
+   - Type a question about the document's content into the message box
+     at the bottom and hit **Send** - the assistant's answer streams in
+     token-by-token, with a `(filename, p.N)`-style citation.
+   - Documents you upload in one chat are **only** usable for questions
+     asked in that same chat (see "Per-chat document isolation" above) -
+     create a second chat and upload a different document to see this in
+     action: a question in chat A can't be answered from chat B's file.
+7. **Other useful URLs:**
    - Backend health check: http://localhost:8000/health
    - Backend config status: http://localhost:8000/api/config/status
    - Backend interactive API docs: http://localhost:8000/docs
@@ -184,34 +278,50 @@ else — no separate setup required for local development.
   https://cloud.qdrant.io, then:
   1. Set `QDRANT_URL` in `.env` to your cluster URL, e.g.
      `https://xyz-example.eu-central.aws.cloud.qdrant.io:6333`.
-  2. Add a `QDRANT_API_KEY` env var (the backend's Qdrant client should be
-     initialized with `api_key=settings.QDRANT_API_KEY` once the
-     ingestion/retrieval code lands — that variable isn't in scope for
-     this scaffold phase, but the setup is documented here since it's the
-     most common follow-up question).
+  2. Set a `QDRANT_API_KEY` env var - `app/engine/qdrant_client.py` reads
+     it (via `os.getenv`, not `app.core.config.Settings` - see the
+     "Architecture" section on why the engine package avoids that
+     dependency) and passes it to `QdrantClient(api_key=...)`.
   3. You can then remove the `qdrant` service from `docker-compose.yml`
      (or just stop using its port) since the backend will talk to Qdrant
      Cloud over HTTPS instead of the local container.
 
+The collection name defaults to `querynest_documents` (override with
+`QDRANT_COLLECTION`), and its vector size comes from `AZURE_EM_DIMENSIONS`
+(see the "Environment variables" table below) - `ensure_collection()` in
+`app/engine/qdrant_client.py` creates it automatically on first use with
+that size, so no manual collection setup is needed either way.
+
 ## Environment variables
 
 All variables live in `.env` (gitignored) and are documented with blank
-placeholders in `.env.example`. The backend reads them via
-`app/core/config.py` (a pydantic `Settings` model).
+placeholders in `.env.example`. Most of the backend reads them via
+`app/core/config.py` (a pydantic `Settings` model) - the exception is
+`app/engine/` (Azure OpenAI + Qdrant client construction), which reads
+`os.environ` directly rather than importing `Settings`, so that package
+has zero dependency on the rest of the app (see "Architecture" above).
+Either way, the values all still come from this one `.env` file -
+docker-compose's `env_file: .env` on the `backend` service exports every
+variable in it as a real process environment variable inside the
+container, so nothing needs to be duplicated between the two.
 
 | Variable                          | Purpose                                                              | Required |
 |------------------------------------|-----------------------------------------------------------------------|------------------------|
 | `DATABASE_URL`                     | Postgres connection string used by SQLAlchemy/Alembic                 | Yes |
 | `QDRANT_URL`                       | Base URL of the Qdrant instance (local container or Qdrant Cloud)     | Yes |
+| `QDRANT_API_KEY`                   | API key for Qdrant Cloud (leave blank for the local docker-compose container, which has no auth) | Optional |
+| `QDRANT_COLLECTION`                | Name of the Qdrant collection documents are stored in                | Optional (defaults to `querynest_documents`) |
 | `FRONTEND_URL`                     | Frontend origin - used to build password-reset email links and the Google OAuth redirect back into the app | Yes |
 | `VITE_API_BASE_URL`                | Read by docker-compose as a **build arg** for the frontend image (Vite inlines `VITE_*` vars at build time, not at container runtime) - the URL the browser uses to reach the backend | Yes, for the docker-compose `frontend` build |
-| `AZURE_EM_ENDPOINT`                 | Azure OpenAI resource endpoint used for embeddings                     | Optional (needed for AI features, later phase) |
+| `AZURE_EM_ENDPOINT`                 | Azure OpenAI resource endpoint used for embeddings                     | Optional (needed for document upload + chat) |
 | `AZURE_EM_API_KEY`                  | API key for the Azure OpenAI embeddings resource                      | Optional |
 | `AZURE_EM_API_VERSION`              | Azure OpenAI API version for the embeddings deployment                | Optional |
 | `AZURE_EM_MODEL`                    | Azure OpenAI embeddings deployment/model name                         | Optional |
+| `AZURE_EM_DIMENSIONS`               | Vector size the embedding deployment returns - sizes the Qdrant collection (`ensure_collection()` in `app/engine/qdrant_client.py`). Confirmed live for this project's deployment: 1536. | Optional (defaults to `1536` in code - `app/engine/azure_client.get_embedding_dimensions()`) |
 | `LLM_ENDPOINT_MINI_MODEL`           | Azure OpenAI resource endpoint used for chat completions               | Optional |
 | `LLM_ENDPOINT_MINI_MODEL_APIKEY`    | API key for the Azure OpenAI chat resource                            | Optional |
 | `MINI_MODEL_NAME`                   | Azure OpenAI chat deployment/model name (e.g. a "mini" model)          | Optional |
+| `LLM_ENDPOINT_MINI_MODEL_API_VERSION` | Azure OpenAI API version for the chat deployment                    | Optional (falls back to `AZURE_EM_API_VERSION`, then a hardcoded default) |
 | `JWT_SECRET_KEY`                    | Secret used to sign/verify JWTs - **required** for every auth endpoint (signup/login/refresh/me); generate with `python -c "import secrets; print(secrets.token_hex(32))"` | Yes |
 | `JWT_ALGORITHM`                     | JWT signing algorithm                                                  | Yes (defaults to `HS256`) |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`   | Access token lifetime, in minutes                                     | Yes (defaults to `30`) |
@@ -224,20 +334,28 @@ placeholders in `.env.example`. The backend reads them via
 | `SMTP_PASSWORD`                     | SMTP auth password                                                     | Optional |
 | `SMTP_FROM_EMAIL`                   | "From" address used on outgoing emails                                 | Optional |
 
+`GET /api/config/status`'s `azure_ai` group does **not** check
+`AZURE_EM_DIMENSIONS` (unlike the other `AZURE_EM_*`/`LLM_ENDPOINT_MINI_MODEL*`
+vars) - it has a sensible code default (`1536`), so a deployment that
+leaves it blank is still considered fully configured. See
+`app/api/config_status.py`'s `CONFIG_GROUPS` and
+`app/engine/azure_client.get_embedding_dimensions()`.
+
 ## Authentication & chat history
 
-Phase 2 adds email/password + Google OAuth authentication (JWT access +
+Phase 2 added email/password + Google OAuth authentication (JWT access +
 refresh tokens) and Postgres-backed chat/message history, sitting behind
-per-user ownership checks that the later RAG phase's per-user document
-isolation builds directly on top of.
+per-user ownership checks that this phase's per-chat document isolation
+builds directly on top of (see "Per-chat document isolation" above).
 
 ### Database migrations (Alembic)
 
 Models live in `backend/app/models/` (`User`, `PasswordResetToken`,
-`Chat`, `Message`) and are managed by Alembic (`backend/alembic/`).
-`alembic/env.py` reads `DATABASE_URL` from the same `Settings` object the
-FastAPI app uses (`app/core/config.py`), so there's one source of truth
-for the connection string - nothing is duplicated into `alembic.ini`.
+`Chat`, `Message`, `Document`) and are managed by Alembic
+(`backend/alembic/`). `alembic/env.py` reads `DATABASE_URL` from the same
+`Settings` object the FastAPI app uses (`app/core/config.py`), so there's
+one source of truth for the connection string - nothing is duplicated
+into `alembic.ini`.
 
 Run migrations against the docker-compose Postgres:
 
@@ -279,7 +397,22 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest \
 `GET /api/chats`, `POST /api/chats`, `GET /api/chats/{id}`,
 `DELETE /api/chats/{id}` all require the same bearer token and 404 (not
 403) on a chat that exists but belongs to another user, so ownership
-can't be distinguished from non-existence.
+can't be distinguished from non-existence. The document/message endpoints
+below follow the exact same pattern.
+
+### Document endpoints (`/api/chats/{chat_id}/documents`)
+
+| Endpoint | Notes |
+|---|---|
+| `POST /api/chats/{chat_id}/documents` | multipart upload (`file`) - saves the raw bytes, creates a `Document` row (`status=processing`), runs ingestion synchronously, and returns the row with its final `status` (`ready`/`failed`) + `error_message`. **404** if the chat isn't the caller's. **503** (`azure_ai_not_configured`) if Azure OpenAI isn't configured. Never a 500 - unsupported file types and ingestion failures land as `status=failed` on the returned row. |
+| `GET /api/chats/{chat_id}/documents` | list documents for the chat, newest first |
+| `DELETE /api/chats/{chat_id}/documents/{document_id}` | deletes the `Document` row, its Qdrant points, and its `storage/` folder |
+
+### Message endpoints (`/api/chats/{chat_id}/messages`)
+
+| Endpoint | Notes |
+|---|---|
+| `POST /api/chats/{chat_id}/messages` | `{content}` - persists the user message, retrieves matching chunks from Qdrant (scoped to this chat + user only), and **streams** the assistant's answer back as Server-Sent Events (`event: token` per token, `event: done` at the end, `event: error` on failure) via `StreamingResponse`. The full reply is persisted as an assistant `Message` once the stream completes. **404** if the chat isn't the caller's. **503** if Azure OpenAI isn't configured (checked *before* the stream starts). |
 
 ### Manual test flow
 
@@ -298,15 +431,22 @@ curl -X POST http://localhost:8000/api/auth/login \
 # 3. create a chat (use the access_token from step 1 or 2)
 curl -X POST http://localhost:8000/api/chats \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" -d '{}'
+# -> {"id": 1, "title": "New chat", ...}
 
-# 4. list chats - the one just created should be there
-curl http://localhost:8000/api/chats -H "Authorization: Bearer <access_token>"
+# 4. upload a document into that chat
+curl -X POST http://localhost:8000/api/chats/1/documents \
+  -H "Authorization: Bearer <access_token>" -F "file=@/path/to/your.pdf"
+# -> {"id": 1, "filename": "your.pdf", "status": "ready", "error_message": null, ...}
+
+# 5. ask a question about it - the answer streams back as SSE
+curl -N -X POST http://localhost:8000/api/chats/1/messages \
+  -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+  -d '{"content":"What does this document say about X?"}'
 ```
 
-Or through the UI: visit http://localhost:4173, click **Sign up**, then
-you'll land on `/app` where "+ New chat" and the sidebar chat list are
-wired to the same endpoints. Sending a message isn't implemented yet by
-design - that's the next phase.
+Or through the UI: visit http://localhost:4173, sign up, land on `/app`,
+click **+ New chat**, drag a file onto the upload widget, then type a
+question in the message box - the reply streams in live.
 
 The backend exposes `GET /api/config/status` which reports, per group,
 whether every variable in that group is set:
@@ -316,17 +456,40 @@ whether every variable in that group is set:
 ```
 
 The frontend uses this to show "configuration missing" banners for
-features that depend on secrets which haven't been provided yet.
+features that depend on secrets which haven't been provided yet - when
+`azure_ai` is `false`, the chat input is disabled entirely with a
+"Configuration missing" banner (see `AppShellPage.tsx`).
+
+### Verifying per-chat isolation yourself
+
+This is the property the whole feature depends on, so it's worth checking
+directly rather than trusting the code:
+
+1. Create two chats, upload a different document to each.
+2. In chat A, ask a question that could only be answered from chat B's
+   document. The answer should say the excerpts don't contain that
+   information - not leak chat B's content.
+3. For a lower-level check, call `app/engine/rag.retrieve()` directly (a
+   plain function, no HTTP needed) with chat A's `chat_id` but a query
+   about chat B's content, and confirm it returns 0 results or only chat
+   A's chunks - this proves the Qdrant `must` filter itself is doing the
+   work, not just that the LLM chose to follow its instructions.
 
 ## Roadmap
 
 - **Phase 1:** repo scaffold, docker-compose, health/config endpoints.
-- **Phase 2 (this phase):** database models + Alembic migrations,
-  authentication (JWT + Google OAuth + forgot-password via SMTP),
-  chat/message history CRUD, and the frontend auth + chat-shell pages.
-- **Phase 3:** document upload + storage, embedding/ingestion pipeline
-  into Qdrant.
-- **Phase 4:** retrieval + streaming chat endpoint (the actual RAG logic,
-  wired into the existing chat/message models), per-user document scoping.
-- **Phase 5:** frontend chat UI polish (streaming responses, citations),
-  deployment.
+- **Phase 2:** database models + Alembic migrations, authentication (JWT +
+  Google OAuth + forgot-password via SMTP), chat/message history CRUD,
+  and the frontend auth + chat-shell pages.
+- **Phase 3 (this phase):** the `app/engine/` RAG package (extraction,
+  chunking, Azure OpenAI embeddings/chat, Qdrant storage/search with
+  per-chat isolation), document upload/list/delete endpoints, a streaming
+  (SSE) message-send endpoint, and the frontend upload widget + streaming
+  chat input.
+- **Phase 4 (next):** a full polished end-to-end Docker demo pass with
+  screenshots in this README, and an automated test suite (unit tests for
+  `app/engine/` - chunking boundaries, the Qdrant isolation filter - plus
+  integration tests for the API layer).
+- **Phase 5:** production-shaped upgrades called out as deliberate
+  tradeoffs above - a background task queue for ingestion instead of
+  synchronous processing, deployment configuration.

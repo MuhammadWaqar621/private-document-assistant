@@ -7,8 +7,17 @@ what Alembic's env.py relies on for autogeneration - always import
 """
 
 from app.models.chat import Chat
+from app.models.document import Document, DocumentStatus
 from app.models.message import Message, MessageRole
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 
-__all__ = ["User", "PasswordResetToken", "Chat", "Message", "MessageRole"]
+__all__ = [
+    "User",
+    "PasswordResetToken",
+    "Chat",
+    "Message",
+    "MessageRole",
+    "Document",
+    "DocumentStatus",
+]

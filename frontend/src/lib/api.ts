@@ -100,9 +100,38 @@ async function request<T>(path: string, options: RequestOptions = {}, _retry = t
   return parsed as T;
 }
 
+/**
+ * Multipart file upload (used by the document-upload widget). Kept
+ * separate from request() above because a FormData body must NOT get a
+ * "Content-Type: application/json" header - the browser sets its own
+ * multipart boundary when the body is a FormData instance.
+ */
+async function requestForm<T>(path: string, formData: FormData, _retry = true): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = getAccessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(apiUrl(path), { method: "POST", headers, body: formData });
+
+  if (res.status === 401 && _retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return requestForm<T>(path, formData, false);
+    }
+    clearTokens();
+  }
+
+  const parsed = await parseBody(res);
+  if (!res.ok) {
+    throw new ApiError(res.status, parsed);
+  }
+  return parsed as T;
+}
+
 export const api = {
   get: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "GET", auth }),
   post: <T,>(path: string, body?: unknown, auth = false): Promise<T> =>
     request<T>(path, { method: "POST", body, auth }),
   del: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "DELETE", auth }),
+  uploadFile: <T,>(path: string, formData: FormData): Promise<T> => requestForm<T>(path, formData),
 };

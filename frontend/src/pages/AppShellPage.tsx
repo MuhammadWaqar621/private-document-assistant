@@ -1,27 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MouseEvent } from "react";
+import type { FormEvent, MouseEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
+import DocumentUpload from "../components/DocumentUpload";
 import { ApiError, api } from "../lib/api";
 import { clearTokens, setTokens } from "../lib/auth";
-import type { Chat, ChatDetail, CurrentUser } from "../lib/types";
+import { streamChatMessage } from "../lib/chatStream";
+import { useConfigStatus } from "../lib/useConfigStatus";
+import type { Chat, ChatDetail, CurrentUser, DocumentOut } from "../lib/types";
 
 /**
- * Bare-bones chat shell: proves auth + chat list + chat history plumbing
- * works end-to-end. Sending a message and getting an AI response is NOT
- * wired up here - that's the document pipeline + RAG streaming phase.
+ * Main chat shell: chat list + history (Phase 2) plus, as of this phase,
+ * document upload and a real streaming RAG chat - sending a message calls
+ * POST /api/chats/{id}/messages and renders the assistant's reply
+ * incrementally as Server-Sent Events arrive (see lib/chatStream.ts),
+ * rather than waiting for the whole answer and dumping it at once.
  */
 export default function AppShellPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { status: configStatus } = useConfigStatus();
 
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [selectedChat, setSelectedChat] = useState<ChatDetail | null>(null);
+  const [documents, setDocuments] = useState<DocumentOut[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  const [messageInput, setMessageInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [streamingReply, setStreamingReply] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Google OAuth redirects back here as /app?access_token=...&refresh_token=...
   // Consume them once, then strip from the URL so a refresh/bookmark
@@ -68,11 +80,33 @@ export default function AppShellPage() {
     loadChats();
   }, [loadChats]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [selectedChat?.messages, streamingReply]);
+
+  const loadDocuments = useCallback(
+    async (chatId: number) => {
+      try {
+        const docs = await api.get<DocumentOut[]>(`/api/chats/${chatId}/documents`, true);
+        setDocuments(docs);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          handleAuthFailure();
+        }
+        // Non-fatal otherwise - the chat itself still works without the
+        // document list rendering.
+      }
+    },
+    [handleAuthFailure],
+  );
+
   async function selectChat(chatId: number) {
     setLoadingMessages(true);
+    setStreamingReply(null);
     try {
       const detail = await api.get<ChatDetail>(`/api/chats/${chatId}`, true);
       setSelectedChat(detail);
+      await loadDocuments(chatId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         handleAuthFailure();
@@ -120,6 +154,70 @@ export default function AppShellPage() {
     clearTokens();
     navigate("/login", { replace: true });
   }
+
+  async function handleSendMessage(event: FormEvent) {
+    event.preventDefault();
+    const content = messageInput.trim();
+    if (!content || !selectedChat || sending) return;
+
+    const chatId = selectedChat.id;
+    setSending(true);
+    setStreamingReply("");
+    setMessageInput("");
+    setError(null);
+
+    // Optimistic: show the user's own message immediately rather than
+    // waiting for the stream to finish and a refetch to bring it back.
+    setSelectedChat((prev) =>
+      prev && prev.id === chatId
+        ? {
+            ...prev,
+            messages: [
+              ...prev.messages,
+              {
+                id: -Date.now(),
+                role: "user",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ],
+          }
+        : prev,
+    );
+
+    // `finish` reloads the chat from the server (so the optimistic user
+    // message and the streamed reply get replaced with the real,
+    // persisted rows) and clears the in-progress UI state. It's called
+    // from onDone when the stream completes normally, and unconditionally
+    // after streamChatMessage() resolves as a fallback for the case where
+    // the initial request itself failed and no "done" event was ever
+    // sent - the `finished` guard makes it safe to call twice.
+    let finished = false;
+    const finish = async () => {
+      if (finished) return;
+      finished = true;
+      try {
+        const detail = await api.get<ChatDetail>(`/api/chats/${chatId}`, true);
+        setSelectedChat(detail);
+      } catch {
+        // Keep the optimistic/streamed content on screen if the refetch
+        // itself fails - not worth surfacing a second error.
+      }
+      setStreamingReply(null);
+      setSending(false);
+    };
+
+    await streamChatMessage(chatId, content, {
+      onToken: (text) => setStreamingReply((prev) => (prev ?? "") + text),
+      onError: (message) => setError(message),
+      onDone: finish,
+    });
+
+    await finish();
+  }
+
+  const azureConfigured = configStatus?.azure_ai ?? true; // avoid a flash of "disabled" while loading
+  const chatInputDisabled = !selectedChat || sending || !azureConfigured;
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
@@ -181,6 +279,14 @@ export default function AppShellPage() {
       </aside>
 
       <main className="flex flex-1 flex-col">
+        {configStatus && !configStatus.azure_ai && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+            Configuration missing - set Azure OpenAI credentials
+            (AZURE_EM_*/LLM_ENDPOINT_MINI_MODEL*) in .env to enable document
+            upload and chat.
+          </div>
+        )}
+
         {error && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
             {error}
@@ -199,18 +305,27 @@ export default function AppShellPage() {
               <h2 className="font-semibold">{selectedChat.title}</h2>
             </div>
 
+            <DocumentUpload
+              chatId={selectedChat.id}
+              documents={documents}
+              onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
+              onAuthFailure={handleAuthFailure}
+              disabled={!azureConfigured}
+            />
+
             <div className="flex-1 overflow-y-auto px-6 py-4">
               {loadingMessages && <p className="text-sm text-slate-400">Loading messages...</p>}
-              {!loadingMessages && selectedChat.messages.length === 0 && (
+              {!loadingMessages && selectedChat.messages.length === 0 && streamingReply === null && (
                 <p className="text-sm text-slate-400">
-                  No messages yet in this chat.
+                  No messages yet in this chat. Upload a document above, then
+                  ask a question about it.
                 </p>
               )}
               <div className="flex flex-col gap-3">
                 {selectedChat.messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`max-w-2xl rounded-lg px-4 py-2 text-sm ${
+                    className={`max-w-2xl whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
                       message.role === "user"
                         ? "ml-auto bg-slate-900 text-white"
                         : "bg-white text-slate-900 shadow-sm"
@@ -219,26 +334,39 @@ export default function AppShellPage() {
                     {message.content}
                   </div>
                 ))}
+                {streamingReply !== null && (
+                  <div className="max-w-2xl whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-sm">
+                    {streamingReply}
+                    <span className="ml-0.5 animate-pulse text-slate-400">▍</span>
+                  </div>
+                )}
               </div>
+              <div ref={messagesEndRef} />
             </div>
 
-            <div className="border-t border-slate-200 p-4">
+            <form onSubmit={handleSendMessage} className="border-t border-slate-200 p-4">
               <div className="flex gap-2">
                 <input
                   type="text"
-                  disabled
-                  placeholder="Sending messages isn't wired up yet - coming in the next phase."
-                  className="flex-1 cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-400"
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  disabled={chatInputDisabled}
+                  placeholder={
+                    azureConfigured
+                      ? "Ask a question about this chat's documents..."
+                      : "Configuration missing - set Azure OpenAI credentials in .env"
+                  }
+                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                 />
                 <button
-                  type="button"
-                  disabled
-                  className="cursor-not-allowed rounded-lg bg-slate-200 px-4 py-2 text-sm font-medium text-slate-400"
+                  type="submit"
+                  disabled={chatInputDisabled || !messageInput.trim()}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                 >
-                  Send
+                  {sending ? "Sending..." : "Send"}
                 </button>
               </div>
-            </div>
+            </form>
           </>
         )}
       </main>

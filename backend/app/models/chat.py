@@ -1,9 +1,11 @@
 """Chat model - a conversation thread owned by a user.
 
-Message/AI-response logic is out of scope for this phase; this is just the
-data model plus CRUD (see app/api/chats.py). Ownership (`user_id`) is what
-the later RAG phase relies on for per-user isolation, so every chat lookup
-in the API layer must filter by the current user.
+Ownership (`user_id`) is what the RAG phase relies on for per-user
+isolation - every chat lookup in the API layer filters by the current
+user. Documents uploaded to a chat (see app/models/document.py) are scoped
+to that chat only: the Qdrant payload filter in
+app/engine/qdrant_client.py enforces that a document uploaded here is
+never retrievable from a different chat, even for the same user.
 """
 
 from datetime import datetime, timezone
@@ -30,4 +32,10 @@ class Chat(Base):
         back_populates="chat",
         cascade="all, delete-orphan",
         order_by="Message.created_at",
+    )
+    documents = relationship(
+        "Document",
+        back_populates="chat",
+        cascade="all, delete-orphan",
+        order_by="Document.created_at",
     )

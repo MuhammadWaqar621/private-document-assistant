@@ -21,3 +21,7 @@ authlib==1.4.0
 httpx==0.28.1
 aiosmtplib==3.0.2
 itsdangerous==2.2.0
+
+# Document ingestion / RAG engine (this phase): PDF/DOCX text extraction
+pdfplumber==0.11.4
+python-docx==1.1.2

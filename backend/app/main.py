@@ -1,11 +1,12 @@
 """
 querynest backend entrypoint.
 
-Phase 2 scope: adds authentication (email/password + Google OAuth) and
-chat/message history (Postgres) on top of the Phase 1 scaffold (app
-scaffold, health check, config-status endpoint). Document ingestion and
-the actual RAG chat/retrieval logic are implemented in a later phase (see
-README.md for the roadmap).
+Phase 2 added authentication (email/password + Google OAuth) and
+chat/message history (Postgres). This phase adds document ingestion
+(app/api/documents.py) and the actual RAG chat/retrieval logic
+(app/api/messages.py) - both orchestrate between the DB/auth stack and the
+independent app/engine/ package (see app/engine/__init__.py for its
+isolation contract).
 """
 
 from fastapi import FastAPI
@@ -15,6 +16,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.api.auth import router as auth_router
 from app.api.chats import router as chats_router
 from app.api.config_status import router as config_status_router
+from app.api.documents import router as documents_router
+from app.api.messages import router as messages_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -22,7 +25,7 @@ settings = get_settings()
 app = FastAPI(
     title="querynest API",
     description="RAG-powered document chat assistant - backend API",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 # Permissive CORS for local development. Tighten this once the frontend
@@ -48,6 +51,8 @@ app.add_middleware(
 app.include_router(config_status_router)
 app.include_router(auth_router)
 app.include_router(chats_router)
+app.include_router(documents_router)
+app.include_router(messages_router)
 
 
 @app.get("/health")

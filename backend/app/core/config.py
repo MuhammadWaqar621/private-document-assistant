@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     AZURE_EM_API_KEY: Optional[str] = None
     AZURE_EM_API_VERSION: Optional[str] = None
     AZURE_EM_MODEL: Optional[str] = None
+    # Embedding vector size, used to size the Qdrant collection (see
+    # app/engine/qdrant_client.py). Not required for the `azure_ai`
+    # config-status group - it has a sensible code default (1536) in
+    # app/engine/azure_client.get_embedding_dimensions(), so a deployment
+    # that doesn't set it is still considered fully configured. Declared
+    # here too (even though app/engine/ reads env vars directly, not this
+    # Settings object - see app/engine/azure_client.py's docstring) purely
+    # so it shows up alongside the other AZURE_EM_* vars for anyone
+    # inspecting Settings.
+    AZURE_EM_DIMENSIONS: str = "1536"
 
     # --- Azure OpenAI - Chat (mini model) -----------------------------------
     LLM_ENDPOINT_MINI_MODEL: Optional[str] = None
