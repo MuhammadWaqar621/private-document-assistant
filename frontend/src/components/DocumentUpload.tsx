@@ -93,7 +93,7 @@ export default function DocumentUpload({
         type="button"
         onClick={() => !disabled && !uploading && inputRef.current?.click()}
         disabled={disabled || uploading}
-        title="Attach a .pdf/.docx/.txt document to this chat"
+        title="Attach a .pdf/.docx/.txt/.jpg/.png document to this chat"
         className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Paperclip size={13} />
@@ -102,7 +102,7 @@ export default function DocumentUpload({
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.docx,.txt"
+        accept=".pdf,.docx,.txt,.jpg,.jpeg,.png"
         disabled={disabled || uploading}
         className="hidden"
         onChange={(e) => {

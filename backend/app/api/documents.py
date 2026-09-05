@@ -28,6 +28,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.engine.azure_client import azure_ai_configured
 from app.engine.ingestion import ingest_document
+from app.engine.llm_provider import get_llm_provider_name
 from app.engine.qdrant_client import delete_document as qdrant_delete_document
 from app.models import Chat, Document, DocumentStatus, User
 
@@ -44,7 +45,11 @@ STORAGE_ROOT = Path(os.getenv("STORAGE_DIR", "storage"))
 # "x.txt/../../../etc/whatever" would otherwise let its "extension"
 # (everything after the last ".") inject path separators/".." segments
 # into the storage path built below.
-ALLOWED_EXTENSIONS = {"pdf", "docx", "txt"}
+# jpg/jpeg/png (OCR via engine/extraction.py's EasyOCR path) added
+# alongside the original pdf/docx/txt. Word support stays at modern .docx
+# only - legacy binary .doc is out of scope (would need a separate
+# toolchain such as antiword/LibreOffice headless conversion - see README).
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "jpg", "jpeg", "png"}
 
 
 # --- Schemas -----------------------------------------------------------------
@@ -78,11 +83,21 @@ def _get_owned_document(db: Session, chat_id: int, document_id: int, user: User)
 
 
 def _azure_not_configured_error() -> HTTPException:
+    # Error code kept as "azure_ai_not_configured" for backward
+    # compatibility (see app/engine/azure_client.py's azure_ai_configured()
+    # docstring); the message is provider-aware since the chat half may now
+    # be Groq-backed (LLM_PROVIDER, default "groq" - see
+    # app/engine/llm_provider.py).
+    provider = get_llm_provider_name()
+    chat_hint = "LLM_ENDPOINT*" if provider == "azure" else "GROQ_API_KEY"
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={
             "error": "azure_ai_not_configured",
-            "message": "Azure OpenAI is not configured. Set AZURE_EM_*/LLM_ENDPOINT* in .env.",
+            "message": (
+                "AI is not configured. Set AZURE_EM_* (embeddings) and "
+                f"{chat_hint} (chat, provider={provider}) in .env."
+            ),
         },
     )
 

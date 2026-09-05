@@ -146,8 +146,12 @@ export default function HomePage() {
 
             {status && (
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                <StatusPill label="Azure OpenAI" ok={status.azure_ai} />
+                <StatusPill
+                  label={`AI (embeddings + ${status.llm_provider === "azure" ? "Azure" : "Groq"} chat)`}
+                  ok={status.rag}
+                />
                 <StatusPill label="SMTP (email)" ok={status.smtp} />
+                <StatusPill label="Speech (Groq)" ok={status.speech} />
               </div>
             )}
           </div>

@@ -21,7 +21,13 @@ result.
 
 Modules:
   - azure_client.py: Azure OpenAI client construction (embeddings + chat)
-  - extraction.py:   raw file bytes -> [(page_number, text), ...]
+  - groq_client.py:  Groq client construction (speech-to-text, text-to-
+                      speech, and chat completions when selected)
+  - llm_provider.py: chat-provider selection (LLM_PROVIDER=groq|azure) -
+                      embeddings are always Azure; only chat is selectable
+  - extraction.py:   raw file bytes -> [(page_number, text), ...],
+                      including OCR (EasyOCR) for images and scanned PDF
+                      pages with no extractable text layer
   - chunking.py:     page text -> embedding-sized chunks
   - qdrant_client.py: vector storage/search, with per-(user_id, chat_id)
                       tenant isolation enforced in every query

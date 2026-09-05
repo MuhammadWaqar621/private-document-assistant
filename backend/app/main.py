@@ -16,6 +16,7 @@ from app.api.chats import router as chats_router
 from app.api.config_status import router as config_status_router
 from app.api.documents import router as documents_router
 from app.api.messages import router as messages_router
+from app.api.speech import router as speech_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -41,6 +42,7 @@ app.include_router(auth_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
 app.include_router(messages_router)
+app.include_router(speech_router)
 
 
 @app.get("/health")

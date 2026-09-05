@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.engine.azure_client import azure_ai_configured
-from app.engine.rag import retrieve, stream_answer
+from app.engine.llm_provider import get_llm_provider_name
+from app.engine.rag import retrieve, stream_answer, stream_onboarding_reply
 from app.models import Chat, Document, DocumentStatus, Message, MessageRole, User
 
 router = APIRouter(prefix="/api/chats/{chat_id}/messages", tags=["messages"])
@@ -57,7 +58,6 @@ def _sse(event: str, data: dict) -> str:
 _TITLE_MAX_LENGTH = 50
 _DEFAULT_TITLE = "New chat"
 
-
 def _derive_title(content: str) -> str:
     """A short chat title from the first message's content, truncated at a
     word boundary rather than mid-word."""
@@ -78,11 +78,21 @@ async def send_message(
     chat = _get_owned_chat(db, chat_id, current_user)
 
     if not azure_ai_configured():
+        # Error code kept as "azure_ai_not_configured" for backward
+        # compatibility (see app/engine/azure_client.py's
+        # azure_ai_configured() docstring); the message is provider-aware
+        # since the chat half may now be Groq-backed (LLM_PROVIDER,
+        # default "groq" - see app/engine/llm_provider.py).
+        provider = get_llm_provider_name()
+        chat_hint = "LLM_ENDPOINT*" if provider == "azure" else "GROQ_API_KEY"
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "error": "azure_ai_not_configured",
-                "message": "Azure OpenAI is not configured. Set AZURE_EM_*/LLM_ENDPOINT* in .env.",
+                "message": (
+                    "AI is not configured. Set AZURE_EM_* (embeddings) and "
+                    f"{chat_hint} (chat, provider={provider}) in .env."
+                ),
             },
         )
 
@@ -133,28 +143,25 @@ async def send_message(
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        if not has_any_ready_document:
-            no_docs_message = (
-                "You haven't uploaded any documents yet"
-                + (" for this chat" if body.scope == "chat" else "")
-                + ". Upload a PDF, DOCX, or TXT file using the attach button "
-                "below, then ask a question about it."
-            )
-            yield _sse("token", {"content": no_docs_message})
-            write_db = SessionLocal()
-            try:
-                write_db.add(
-                    Message(chat_id=chat_id, role=MessageRole.assistant, content=no_docs_message)
-                )
-                write_db.commit()
-            finally:
-                write_db.close()
-            yield _sse("done", {})
-            return
-
         full_text = ""
         try:
-            async for token in stream_answer(body.content, retrieved, history):
+            # No ready documents anywhere in scope: still a REAL LLM call
+            # (not a hardcoded string), but through stream_onboarding_reply()
+            # - a tightly-scoped system prompt (see app/engine/rag.py) that
+            # can greet naturally and answer "what is QueryNest"/"who built
+            # this" in its own words, while being explicitly instructed to
+            # refuse - not answer from general knowledge - anything that
+            # actually needs real information. The hard gate is still real:
+            # has_any_ready_document is a DB fact checked above, not
+            # something a clever prompt can talk the model out of; only the
+            # *reply itself*, for this specific "nothing uploaded yet"
+            # moment, is now LLM-generated instead of regex-matched.
+            token_source = (
+                stream_onboarding_reply(body.content, history)
+                if not has_any_ready_document
+                else stream_answer(body.content, retrieved, history)
+            )
+            async for token in token_source:
                 full_text += token
                 yield _sse("token", {"content": token})
         except Exception as exc:  # noqa: BLE001 - surface the failure over SSE, don't just hang up

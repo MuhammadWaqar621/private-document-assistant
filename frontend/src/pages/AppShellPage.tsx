@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { Lock, MessageSquarePlus, Send, Trash2 } from "lucide-react";
+import { Lock, Loader2, MessageSquarePlus, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
 
 import DocumentUpload from "../components/DocumentUpload";
 import { ApiError, api } from "../lib/api";
 import { clearTokens } from "../lib/auth";
 import { streamChatMessage } from "../lib/chatStream";
 import { useConfigStatus } from "../lib/useConfigStatus";
-import type { Chat, ChatDetail, CurrentUser, DocumentOut } from "../lib/types";
+import type { Chat, ChatDetail, ChatMessage, CurrentUser, DocumentOut } from "../lib/types";
 
 /**
  * Main chat shell: chat list + history (Phase 2) plus, as of this phase,
@@ -39,6 +39,17 @@ export default function AppShellPage() {
   // POST body - see lib/chatStream.ts).
   const [chatScopeOnly, setChatScopeOnly] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // --- Speech: mic-to-transcribe + per-message text-to-speech -----------
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  // Which message (by id) is currently being synthesized/played, so each
+  // message's speaker button can show its own loading/playing state.
+  const [synthesizingId, setSynthesizingId] = useState<number | null>(null);
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
   const handleAuthFailure = useCallback(() => {
     clearTokens();
@@ -222,8 +233,95 @@ export default function AppShellPage() {
     await finish();
   }
 
-  const azureConfigured = configStatus?.azure_ai ?? true; // avoid a flash of "disabled" while loading
-  const chatInputDisabled = !selectedChat || sending || !azureConfigured;
+  // Click once to start recording (browser MediaRecorder API), click again
+  // to stop - the recorded blob is then POSTed to /api/speech/transcribe
+  // and the returned text is appended to (or replaces, if empty) the
+  // message input.
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setRecording(false);
+
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        if (blob.size === 0) return;
+
+        setTranscribing(true);
+        try {
+          const formData = new FormData();
+          formData.append("file", blob, "recording.webm");
+          const result = await api.uploadAudio<{ text: string }>(
+            "/api/speech/transcribe",
+            formData,
+          );
+          setMessageInput((prev) => (prev.trim() ? `${prev.trim()} ${result.text}` : result.text));
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            handleAuthFailure();
+            return;
+          }
+          setError(err instanceof Error ? err.message : "Transcription failed.");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setError("Could not access the microphone - check your browser's permissions.");
+    }
+  }
+
+  // Speaker button next to an assistant message: POSTs the message's full
+  // text to /api/speech/synthesize and plays the returned MP3 via a plain
+  // Audio element. Clicking the currently-playing message's button again
+  // stops it.
+  async function playMessageAudio(message: ChatMessage) {
+    if (playingId === message.id) {
+      audioElementRef.current?.pause();
+      setPlayingId(null);
+      return;
+    }
+
+    audioElementRef.current?.pause();
+    setSynthesizingId(message.id);
+    try {
+      const blob = await api.synthesizeSpeech(message.content);
+      const audio = new Audio(URL.createObjectURL(blob));
+      audioElementRef.current = audio;
+      audio.onended = () => setPlayingId(null);
+      setPlayingId(message.id);
+      await audio.play();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        handleAuthFailure();
+        return;
+      }
+      setError(err instanceof Error ? err.message : "Could not play audio.");
+      setPlayingId(null);
+    } finally {
+      setSynthesizingId(null);
+    }
+  }
+
+  const ragConfigured = configStatus?.rag ?? true; // avoid a flash of "disabled" while loading
+  const speechConfigured = configStatus?.speech ?? true;
+  const chatInputDisabled = !selectedChat || sending || !ragConfigured;
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
@@ -289,11 +387,13 @@ export default function AppShellPage() {
       </aside>
 
       <main className="flex flex-1 flex-col">
-        {configStatus && !configStatus.azure_ai && (
+        {configStatus && !configStatus.rag && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-            Configuration missing - set Azure OpenAI credentials
-            (AZURE_EM_*/LLM_ENDPOINT*) in .env to enable document
-            upload and chat.
+            Configuration missing - set Azure OpenAI embeddings credentials
+            (AZURE_EM_*) and{" "}
+            {configStatus.llm_provider === "azure" ? "Azure OpenAI chat" : "Groq chat"}{" "}
+            credentials ({configStatus.llm_provider === "azure" ? "LLM_ENDPOINT*" : "GROQ_API_KEY"})
+            in .env to enable document upload and chat.
           </div>
         )}
 
@@ -327,13 +427,39 @@ export default function AppShellPage() {
                 {selectedChat.messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`max-w-2xl whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
-                      message.role === "user"
-                        ? "ml-auto bg-brand-600 text-white"
-                        : "bg-white text-slate-900 shadow-card"
+                    className={`flex max-w-2xl items-end gap-1.5 ${
+                      message.role === "user" ? "ml-auto flex-row-reverse" : ""
                     }`}
                   >
-                    {message.content}
+                    <div
+                      className={`whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
+                        message.role === "user"
+                          ? "bg-brand-600 text-white"
+                          : "bg-white text-slate-900 shadow-card"
+                      }`}
+                    >
+                      {message.content}
+                    </div>
+                    {message.role === "assistant" && speechConfigured && (
+                      <button
+                        type="button"
+                        onClick={() => playMessageAudio(message)}
+                        title={playingId === message.id ? "Stop" : "Read this reply aloud"}
+                        className={`mb-1 shrink-0 rounded-full p-1.5 transition ${
+                          playingId === message.id
+                            ? "bg-brand-100 text-brand-700"
+                            : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                        }`}
+                      >
+                        {synthesizingId === message.id ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : playingId === message.id ? (
+                          <Square size={13} />
+                        ) : (
+                          <Volume2 size={13} />
+                        )}
+                      </button>
+                    )}
                   </div>
                 ))}
                 {streamingReply !== null && (
@@ -353,7 +479,7 @@ export default function AppShellPage() {
                   documents={documents}
                   onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
                   onAuthFailure={handleAuthFailure}
-                  disabled={!azureConfigured}
+                  disabled={!ragConfigured}
                 />
               </div>
 
@@ -377,12 +503,33 @@ export default function AppShellPage() {
                   onChange={(e) => setMessageInput(e.target.value)}
                   disabled={chatInputDisabled}
                   placeholder={
-                    azureConfigured
+                    ragConfigured
                       ? "Ask a question about your uploaded documents..."
-                      : "Configuration missing - set Azure OpenAI credentials in .env"
+                      : "Configuration missing - set AI credentials in .env"
                   }
                   className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                 />
+                {speechConfigured && (
+                  <button
+                    type="button"
+                    onClick={toggleRecording}
+                    disabled={chatInputDisabled || transcribing}
+                    title={recording ? "Stop recording" : "Record a voice message"}
+                    className={`flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-medium shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      recording
+                        ? "border-red-300 bg-red-50 text-red-600 hover:bg-red-100"
+                        : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    {transcribing ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : recording ? (
+                      <Square size={15} />
+                    ) : (
+                      <Mic size={15} />
+                    )}
+                  </button>
+                )}
                 <button
                   type="submit"
                   disabled={chatInputDisabled || !messageInput.trim()}

@@ -64,6 +64,25 @@ class Settings(BaseSettings):
     LLM_ENDPOINT_APIKEY: Optional[str] = None
     LLM_MODEL_NAME: Optional[str] = None
 
+    # --- Chat provider selection ---------------------------------------
+    # "groq" (default) or "azure" - see app/engine/llm_provider.py. Only
+    # the CHAT half of the RAG pipeline is selectable; embeddings above are
+    # always Azure OpenAI (Groq has no embeddings API). Declared here
+    # (even though app/engine/ reads env vars directly, not this Settings
+    # object) purely so it shows up for anyone inspecting Settings, same as
+    # AZURE_EM_DIMENSIONS above.
+    LLM_PROVIDER: str = "groq"
+
+    # --- Groq (speech-to-text, text-to-speech, and optionally chat) --------
+    GROQ_API_KEY: Optional[str] = None
+    # The model/voice vars below all have sensible code defaults in
+    # app/engine/groq_client.py, so - like AZURE_EM_DIMENSIONS - they are
+    # not required for any config-status group to report as configured.
+    GROQ_STT_MODEL: str = "whisper-large-v3"
+    GROQ_TTS_MODEL: str = "playai-tts"
+    GROQ_TTS_VOICE: str = "Fritz-PlayAI"
+    GROQ_LLM_MODEL: str = "llama-3.3-70b-versatile"
+
     # --- JWT (auth) ----------------------------------------------------------
     JWT_SECRET_KEY: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"

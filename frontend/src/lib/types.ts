@@ -1,6 +1,14 @@
 export type ConfigStatus = {
-  azure_ai: boolean;
+  // Document upload + chat: embeddings (always Azure OpenAI) AND whichever
+  // chat provider `llm_provider` names below are fully configured.
+  rag: boolean;
   smtp: boolean;
+  // Speech-to-text (mic) + text-to-speech (per-message speaker button) -
+  // both backed by Groq, gated on GROQ_API_KEY alone.
+  speech: boolean;
+  // Which provider is currently serving chat completions - "groq"
+  // (default) or "azure". Embeddings are always Azure regardless.
+  llm_provider: "groq" | "azure";
 };
 
 export type CurrentUser = {

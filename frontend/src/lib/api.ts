@@ -139,10 +139,44 @@ async function requestForm<T>(path: string, formData: FormData, _retry = true): 
   return parsed as T;
 }
 
+/**
+ * POST /api/speech/synthesize returns a raw audio/mpeg body (not JSON), so
+ * it can't go through request()/parseBody() above - this fetches directly
+ * and returns a Blob the caller can hand to `new Audio(URL.createObjectURL(...))`.
+ */
+async function requestAudioBlob(path: string, body: unknown, _retry = true): Promise<Blob> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getAccessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401 && _retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return requestAudioBlob(path, body, false);
+    }
+    clearTokens();
+  }
+
+  if (!res.ok) {
+    throw new ApiError(res.status, await parseBody(res));
+  }
+  return res.blob();
+}
+
 export const api = {
   get: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "GET", auth }),
   post: <T,>(path: string, body?: unknown, auth = false): Promise<T> =>
     request<T>(path, { method: "POST", body, auth }),
   del: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "DELETE", auth }),
   uploadFile: <T,>(path: string, formData: FormData): Promise<T> => requestForm<T>(path, formData),
+  // Multipart audio upload for POST /api/speech/transcribe - same
+  // no-manual-Content-Type reasoning as uploadFile() above.
+  uploadAudio: <T,>(path: string, formData: FormData): Promise<T> => requestForm<T>(path, formData),
+  synthesizeSpeech: (text: string): Promise<Blob> => requestAudioBlob("/api/speech/synthesize", { text }),
 };

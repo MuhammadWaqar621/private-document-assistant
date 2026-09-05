@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic[email]==2.10.4
@@ -23,6 +25,14 @@ aiosmtplib==5.1.2
 # Document ingestion / RAG engine (this phase): PDF/DOCX text extraction
 pdfplumber==0.11.4
 python-docx==1.1.2
+
+# OCR (images + scanned PDF pages): EasyOCR pulls in torch/torchvision -
+# the --extra-index-url line at the top of this file makes those resolve
+# to CPU-only wheels instead of the much larger CUDA builds. pymupdf
+# (import name `fitz`) renders a scanned PDF page to an image for OCR with
+# no system binary needed (bundled), unlike poppler/ghostscript approaches.
+easyocr==1.7.2
+pymupdf==1.25.1
 
 # Testing (backend/tests/): FastAPI's TestClient needs httpx (already
 # present above); pytest-asyncio is included for any future async test

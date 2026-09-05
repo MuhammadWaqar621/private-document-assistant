@@ -1,15 +1,21 @@
 """Integration tests for /api/chats/{chat_id}/messages - the auto-titling
-side effect and the "no documents anywhere" hard gate (refuses before ever
-calling the LLM, rather than letting this endpoint silently become a
-generic no-grounding chatbot - see app/api/messages.py's module docstring
-and the has_any_ready_document check).
+side effect and the "no documents anywhere" hard gate (refuses to run real
+document retrieval before ever calling the LLM with document context,
+rather than letting this endpoint silently become a generic no-grounding
+chatbot - see app/api/messages.py's module docstring and the
+has_any_ready_document check).
 
-Real Azure OpenAI calls are never made in these tests: the hard-gate path
-never reaches app.engine.rag at all, which is exactly what's being
-proven here by monkeypatching retrieve()/stream_answer() to raise if
-called - so azure_ai_configured only needs to be faked True to get past
-the initial config check, no real credentials involved.
+Real Azure OpenAI/Groq calls are never made in these tests:
+retrieve()/stream_answer() are monkeypatched to raise if called (the
+no-documents path must never reach them), and stream_onboarding_reply() -
+the real-but-scoped LLM call used for that no-documents case (see
+app/engine/rag.py's ONBOARDING_SYSTEM_PROMPT) - is monkeypatched to a fake
+deterministic async generator, so azure_ai_configured only needs to be
+faked True to get past the initial config check, no real credentials
+involved.
 """
+
+import json
 
 from .conftest import auth_headers, signup
 
@@ -41,6 +47,40 @@ def _fail_if_called(*args, **kwargs):
     )
 
 
+async def _fake_token_stream(*args, **kwargs):
+    yield "Hello"
+    yield " there!"
+
+
+def _stub_onboarding_reply(monkeypatch, recorder=None):
+    def _stream_onboarding_reply(question, history=None):
+        if recorder is not None:
+            recorder.append({"question": question, "history": history})
+        return _fake_token_stream()
+
+    monkeypatch.setattr(messages_module, "stream_onboarding_reply", _stream_onboarding_reply)
+
+
+def _sse_token_text(response_text: str) -> str:
+    """Reconstruct the full streamed reply from raw SSE response text -
+    each `event: token` carries one `data: {"content": "..."}` chunk (see
+    app/api/messages.py's _sse() helper), so this joins them back together
+    in order. Used instead of re-fetching the chat afterward: the final
+    assistant Message is written via a fresh SessionLocal() opened
+    directly in app/api/messages.py's event_stream() (not through the
+    request-scoped `db` dependency this test suite overrides to SQLite -
+    see conftest.py), so it's never visible to a GET against the test's
+    isolated database - the SSE stream itself is the only reliable place
+    to observe the streamed content in this test setup."""
+    tokens = []
+    for event_block in response_text.split("\n\n"):
+        if not event_block.startswith("event: token"):
+            continue
+        data_line = next(line for line in event_block.splitlines() if line.startswith("data:"))
+        tokens.append(json.loads(data_line[len("data:"):].strip())["content"])
+    return "".join(tokens)
+
+
 def test_returns_503_when_azure_not_configured(client, monkeypatch):
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: False)
     user = signup(client)
@@ -52,24 +92,51 @@ def test_returns_503_when_azure_not_configured(client, monkeypatch):
     assert response.json()["detail"]["error"] == "azure_ai_not_configured"
 
 
-def test_no_documents_anywhere_refuses_without_calling_the_llm(client, monkeypatch):
+def test_no_documents_anywhere_uses_onboarding_reply_not_retrieval(client, monkeypatch):
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
     monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
     monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    _stub_onboarding_reply(monkeypatch)
 
     user = signup(client)
     chat = _create_chat(client, user)
 
-    response = _send_message(client, user, chat["id"], "What does my document say?")
+    response = _send_message(client, user, chat["id"], "hi")
 
     assert response.status_code == 200
-    assert "haven't uploaded any documents" in response.text
+    assert _sse_token_text(response.text) == "Hello there!"
 
 
-def test_no_documents_refusal_respects_chat_only_scope_wording(client, monkeypatch):
+def test_no_documents_onboarding_reply_receives_the_question_and_history(client, monkeypatch):
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
     monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
     monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    calls = []
+    _stub_onboarding_reply(monkeypatch, recorder=calls)
+
+    user = signup(client)
+    chat = _create_chat(client, user)
+
+    response = _send_message(client, user, chat["id"], "what is querynest?", scope="chat")
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["question"] == "what is querynest?"
+    assert calls[0]["history"] == []  # first message in the chat - no prior turns yet
+
+
+def test_no_documents_onboarding_reply_streams_the_full_reconstructed_text(client, monkeypatch):
+    # The assistant Message row for this path is written via a fresh
+    # SessionLocal() inside event_stream() (see app/api/messages.py),
+    # which - unlike the request-scoped `db` dependency - isn't overridden
+    # to this test suite's isolated SQLite database (see conftest.py), so
+    # it can't be observed via a GET afterward here. What *can* be
+    # verified in this test setup is that the full reply is correctly
+    # streamed back token-by-token over SSE - see _sse_token_text().
+    monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
+    monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    _stub_onboarding_reply(monkeypatch)
 
     user = signup(client)
     chat = _create_chat(client, user)
@@ -77,13 +144,15 @@ def test_no_documents_refusal_respects_chat_only_scope_wording(client, monkeypat
     response = _send_message(client, user, chat["id"], "hello?", scope="chat")
 
     assert response.status_code == 200
-    assert "for this chat" in response.text
+    assert _sse_token_text(response.text) == "Hello there!"
+    assert "event: done" in response.text
 
 
 def test_first_message_auto_titles_the_chat(client, monkeypatch):
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
     monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
     monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    _stub_onboarding_reply(monkeypatch)
 
     user = signup(client)
     chat = _create_chat(client, user)
@@ -100,6 +169,7 @@ def test_auto_title_truncates_long_first_messages_at_a_word_boundary(client, mon
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
     monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
     monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    _stub_onboarding_reply(monkeypatch)
 
     user = signup(client)
     chat = _create_chat(client, user)
@@ -118,6 +188,7 @@ def test_auto_title_never_overwrites_an_explicit_title(client, monkeypatch):
     monkeypatch.setattr(messages_module, "azure_ai_configured", lambda: True)
     monkeypatch.setattr(messages_module, "retrieve", _fail_if_called)
     monkeypatch.setattr(messages_module, "stream_answer", _fail_if_called)
+    _stub_onboarding_reply(monkeypatch)
 
     user = signup(client)
     chat = _create_chat(client, user, title="My custom title")

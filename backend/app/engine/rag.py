@@ -8,20 +8,18 @@ retrieval draws from every chat the calling user owns; passing a `chat_id`
 narrows it to just that one chat's uploads. `stream_answer()` builds a
 prompt from the retrieved chunks + prior chat history (both passed in as
 plain dicts/dataclasses, never ORM objects) and streams tokens back from
-the Azure chat deployment as an async generator, so the API layer can
-forward them to the client as they arrive instead of waiting for the whole
-answer.
+the currently-selected chat provider (Groq by default, or Azure OpenAI -
+see app/engine/llm_provider.py) as an async generator, so the API layer
+can forward them to the client as they arrive instead of waiting for the
+whole answer. Embeddings are always Azure OpenAI regardless of that
+provider choice - Groq has no embeddings API.
 """
 
 import os
 from typing import AsyncGenerator, List, Optional, TypedDict
 
-from app.engine.azure_client import (
-    get_async_chat_client,
-    get_chat_config,
-    get_embedding_client,
-    get_embedding_config,
-)
+from app.engine.azure_client import get_embedding_client, get_embedding_config
+from app.engine.llm_provider import get_active_chat_provider
 from app.engine.qdrant_client import SearchResult, search
 
 DEFAULT_TOP_K = 5
@@ -65,10 +63,47 @@ UNGROUNDED_FALLBACK_SYSTEM_PROMPT = (
     "generally:') before giving the answer."
 )
 
+# Used when the caller has confirmed (a real DB check - see
+# app/api/messages.py's has_any_ready_document hard gate) that the user has
+# NO ready documents anywhere in scope at all. A real LLM call (not a
+# hardcoded string) so greetings and "what is QueryNest"/"who built this"
+# get a natural reply in the model's own words, while still refusing -
+# rather than answering from general knowledge - any genuine content
+# question, since there is nothing uploaded to ground it in yet. The
+# security-relevant gate (whether this function is even reached) stays a
+# code-level DB fact in messages.py, never something a prompt alone
+# decides; this system prompt only controls the *wording* of the reply for
+# that already-gated case.
+ONBOARDING_SYSTEM_PROMPT = (
+    "You are QueryNest, a private document chat assistant developed by "
+    "Muhammad Waqar (waqarsahi621@gmail.com). This user has not uploaded "
+    "any documents yet. Greet them naturally if they say hello, and if they "
+    "ask what QueryNest is or who built it, answer using the facts above in "
+    "your own words. If they ask ANY question that would require real "
+    "information or facts to answer - anything beyond a greeting or a "
+    "question about QueryNest itself - tell them clearly and briefly that "
+    "you need them to upload a document first before you can answer that, "
+    "and do NOT attempt to answer it yourself using general knowledge."
+)
+
 
 class HistoryMessage(TypedDict):
     role: str  # "user" | "assistant"
     content: str
+
+
+def _history_messages(history: Optional[List[HistoryMessage]]) -> List[dict]:
+    """Prior turns as plain {"role", "content"} dicts, dropping anything
+    with an unrecognized role or empty content. Shared by _build_messages()
+    (grounded/fallback prompts) and stream_onboarding_reply() below so the
+    filtering logic isn't duplicated."""
+    messages: List[dict] = []
+    for turn in history or []:
+        role = turn.get("role")
+        content = turn.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    return messages
 
 
 def retrieve(
@@ -109,12 +144,7 @@ def _build_messages(
     # flat refusal.
     system_prompt = GROUNDED_SYSTEM_PROMPT if chunks else UNGROUNDED_FALLBACK_SYSTEM_PROMPT
     messages: List[dict] = [{"role": "system", "content": system_prompt}]
-
-    for turn in history or []:
-        role = turn.get("role")
-        content = turn.get("content", "")
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
+    messages.extend(_history_messages(history))
 
     if chunks:
         context_block = _build_context_block(chunks)
@@ -135,17 +165,53 @@ async def stream_answer(
     chunks: List[SearchResult],
     history: Optional[List[HistoryMessage]] = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream the assistant's answer token-by-token as it arrives from
-    Azure OpenAI. Yields plain str tokens (deltas), never a full ORM/HTTP
-    object - the API layer decides how to frame them (SSE, etc.)."""
-    client = get_async_chat_client()
-    config = get_chat_config()
-    assert config is not None  # caller must check azure_ai_configured() first
+    """Stream the assistant's answer token-by-token as it arrives from the
+    currently-selected chat provider (Groq by default, or Azure OpenAI -
+    see app/engine/llm_provider.py). Yields plain str tokens (deltas),
+    never a full ORM/HTTP object - the API layer decides how to frame them
+    (SSE, etc.)."""
+    provider = get_active_chat_provider()  # caller must check azure_ai_configured() first
 
     messages = _build_messages(question, chunks, history)
 
-    stream = await client.chat.completions.create(
-        model=config.model,
+    stream = await provider.client.chat.completions.create(
+        model=provider.model,
+        messages=messages,
+        stream=True,
+    )
+    async for event in stream:
+        if not event.choices:
+            continue
+        delta = event.choices[0].delta
+        if delta and delta.content:
+            yield delta.content
+
+
+async def stream_onboarding_reply(
+    question: str,
+    history: Optional[List[HistoryMessage]] = None,
+) -> AsyncGenerator[str, None]:
+    """Stream a reply for a user with NO ready documents anywhere in scope
+    (see app/api/messages.py's has_any_ready_document hard gate - a real DB
+    check, unchanged, that decides whether this function is even reached).
+
+    A genuine LLM call under ONBOARDING_SYSTEM_PROMPT, not a hardcoded
+    string: this lets a greeting or a "what is QueryNest"/"who built this"
+    question get a natural reply in the model's own words, while the
+    system prompt explicitly instructs the model to refuse - not answer
+    from general knowledge - any question that actually needs real
+    information, since there is nothing uploaded yet to ground it in.
+    Takes no `chunks`/`user_id`/`chat_id` - no Qdrant retrieval happens
+    here at all. Streams from the same currently-selected chat provider as
+    stream_answer() (see app/engine/llm_provider.py)."""
+    provider = get_active_chat_provider()  # caller must check azure_ai_configured() first
+
+    messages: List[dict] = [{"role": "system", "content": ONBOARDING_SYSTEM_PROMPT}]
+    messages.extend(_history_messages(history))
+    messages.append({"role": "user", "content": question})
+
+    stream = await provider.client.chat.completions.create(
+        model=provider.model,
         messages=messages,
         stream=True,
     )

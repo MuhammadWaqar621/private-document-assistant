@@ -84,10 +84,23 @@ def get_chat_config() -> Optional[ChatConfig]:
 
 
 def azure_ai_configured() -> bool:
-    """True only when both the embedding and chat deployments are fully
-    configured - used by app/api/config_status.py's `azure_ai` group and by
-    the documents/messages endpoints to fail fast with a 503."""
-    return get_embedding_config() is not None and get_chat_config() is not None
+    """True only when the embeddings deployment (always Azure - Groq has
+    no embeddings API) AND the currently-selected chat provider are both
+    fully configured - used by app/api/config_status.py's `rag` group and
+    by the documents/messages endpoints to fail fast with a 503.
+
+    Kept under this name for backward compatibility (this project
+    originally supported only Azure OpenAI, for both embeddings and chat) -
+    despite the name, the chat half of this check reflects Groq's
+    configuration whenever LLM_PROVIDER=groq (the default). See
+    app/engine/llm_provider.py for the provider-selection logic this
+    delegates to for the chat half. The import is local to avoid a
+    module-load-order cycle: llm_provider.py imports this module, so it
+    can't be imported back at module scope here.
+    """
+    from app.engine.llm_provider import chat_provider_configured
+
+    return get_embedding_config() is not None and chat_provider_configured()
 
 
 def get_embedding_dimensions() -> int:
