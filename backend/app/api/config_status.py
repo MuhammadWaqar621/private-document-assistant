@@ -44,6 +44,7 @@ CONFIG_GROUPS: dict[str, list[str]] = {
     ],
     "smtp": [
         "SMTP_HOST",
+        "SMTP_PORT",
         "SMTP_USERNAME",
         "SMTP_PASSWORD",
         "SMTP_FROM_EMAIL",

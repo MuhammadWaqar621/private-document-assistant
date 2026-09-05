@@ -7,6 +7,14 @@ COPY package.json ./
 RUN npm install
 
 COPY . .
+
+# Vite inlines VITE_* env vars at build time, so this has to be a build
+# arg (not a runtime "environment:" in docker-compose.yml) - see
+# frontend/src/lib/config.ts and README.md's "Environment variables"
+# section for why the default points at localhost:8000.
+ARG VITE_API_BASE_URL=http://localhost:8000
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 RUN npm run build
 
 # --- Serve stage -----------------------------------------------------------

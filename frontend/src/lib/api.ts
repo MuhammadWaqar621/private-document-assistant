@@ -1,0 +1,108 @@
+/**
+ * Small fetch wrapper for the backend API.
+ *
+ * - Always sends/parses JSON.
+ * - `auth: true` attaches the stored access token as a Bearer header.
+ * - On a 401 with `auth: true`, transparently tries POST /api/auth/refresh
+ *   once and retries the original request before giving up - this is what
+ *   lets a stored refresh token silently extend a session past the (short)
+ *   access token lifetime without the user re-entering credentials.
+ */
+
+import { apiUrl } from "./config";
+import { clearTokens, getAccessToken, getRefreshToken, setAccessToken } from "./auth";
+
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(status: number, body: unknown) {
+    super(errorMessageFrom(body) ?? `Request failed with status ${status}`);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function errorMessageFrom(body: unknown): string | null {
+  if (body && typeof body === "object" && "detail" in body) {
+    const detail = (body as { detail: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      const message = (detail as { message: unknown }).message;
+      if (typeof message === "string") return message;
+    }
+  }
+  return null;
+}
+
+async function parseBody(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function refreshAccessToken(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+
+  try {
+    const res = await fetch(apiUrl("/api/auth/refresh"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { access_token: string };
+    setAccessToken(data.access_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type RequestOptions = {
+  method?: "GET" | "POST" | "DELETE" | "PUT" | "PATCH";
+  body?: unknown;
+  auth?: boolean;
+};
+
+async function request<T>(path: string, options: RequestOptions = {}, _retry = true): Promise<T> {
+  const { method = "GET", body, auth = false } = options;
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (auth) {
+    const token = getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
+  const res = await fetch(apiUrl(path), {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  if (res.status === 401 && auth && _retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return request<T>(path, options, false);
+    }
+    clearTokens();
+  }
+
+  const parsed = await parseBody(res);
+  if (!res.ok) {
+    throw new ApiError(res.status, parsed);
+  }
+  return parsed as T;
+}
+
+export const api = {
+  get: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "GET", auth }),
+  post: <T,>(path: string, body?: unknown, auth = false): Promise<T> =>
+    request<T>(path, { method: "POST", body, auth }),
+  del: <T,>(path: string, auth = false): Promise<T> => request<T>(path, { method: "DELETE", auth }),
+};

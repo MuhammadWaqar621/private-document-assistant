@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     """Central application settings.
 
     Grouped roughly by concern. Auth-related settings (JWT, Google OAuth,
-    SMTP) are defined now so the env contract is stable, but the features
-    that consume them are implemented in a later phase.
+    SMTP) back the endpoints in app/api/auth.py - each optional group is
+    considered "configured" only once every variable in it is set (see
+    app/api/config_status.py), and the endpoints that depend on an
+    unconfigured group return a clear 503 rather than crashing.
     """
 
     model_config = SettingsConfigDict(
@@ -38,6 +40,9 @@ class Settings(BaseSettings):
     # --- Qdrant (vector DB) ------------------------------------------------
     QDRANT_URL: str = "http://qdrant:6333"
 
+    # --- Frontend (used to build links in emails / OAuth redirects) --------
+    FRONTEND_URL: str = "http://localhost:5173"
+
     # --- Azure OpenAI - Embeddings ------------------------------------------
     AZURE_EM_ENDPOINT: Optional[str] = None
     AZURE_EM_API_KEY: Optional[str] = None
@@ -49,20 +54,17 @@ class Settings(BaseSettings):
     LLM_ENDPOINT_MINI_MODEL_APIKEY: Optional[str] = None
     MINI_MODEL_NAME: Optional[str] = None
 
-    # --- JWT (auth - implemented in a later phase) --------------------------
-    # TODO(auth-phase): wire these into an actual auth module.
+    # --- JWT (auth) ----------------------------------------------------------
     JWT_SECRET_KEY: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # --- Google OAuth (auth - implemented in a later phase) ------------------
-    # TODO(auth-phase): wire these into an actual Google OAuth flow.
+    # --- Google OAuth ("Sign in with Google") ---------------------------------
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
 
-    # --- SMTP (forgot-password emails - implemented in a later phase) -------
-    # TODO(auth-phase): wire these into an actual email-sending module.
+    # --- SMTP (forgot-password emails) ---------------------------------------
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587
     SMTP_USERNAME: Optional[str] = None
