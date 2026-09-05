@@ -21,9 +21,16 @@ export type StreamCallbacks = {
   onDone: () => void;
 };
 
+// "all" (default): the backend retrieves from every document the current
+// user has uploaded, across all of their chats. "chat": restrict
+// retrieval to just this chat's uploads - wired to the "Only search this
+// chat's documents" checkbox in AppShellPage.
+export type MessageScope = "all" | "chat";
+
 export async function streamChatMessage(
   chatId: number,
   content: string,
+  scope: MessageScope,
   callbacks: StreamCallbacks,
 ): Promise<void> {
   const token = getAccessToken();
@@ -36,7 +43,7 @@ export async function streamChatMessage(
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, scope }),
     });
   } catch {
     callbacks.onError("Could not reach the server.");

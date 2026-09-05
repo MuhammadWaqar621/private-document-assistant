@@ -1,13 +1,16 @@
 """
 Retrieval + streaming chat completion - the actual RAG logic.
 
-`retrieve()` embeds a question and searches Qdrant scoped to
-(user_id, chat_id) - see qdrant_client.search() for the tenant-isolation
-filter this relies on. `stream_answer()` builds a prompt from the
-retrieved chunks + prior chat history (both passed in as plain
-dicts/dataclasses, never ORM objects) and streams tokens back from the
-Azure chat deployment as an async generator, so the API layer can forward
-them to the client as they arrive instead of waiting for the whole answer.
+`retrieve()` embeds a question and searches Qdrant, always scoped to
+`user_id` and optionally also to `chat_id` - see qdrant_client.search() for
+the tenant-isolation filter this relies on. By default (`chat_id=None`)
+retrieval draws from every chat the calling user owns; passing a `chat_id`
+narrows it to just that one chat's uploads. `stream_answer()` builds a
+prompt from the retrieved chunks + prior chat history (both passed in as
+plain dicts/dataclasses, never ORM objects) and streams tokens back from
+the Azure chat deployment as an async generator, so the API layer can
+forward them to the client as they arrive instead of waiting for the whole
+answer.
 """
 
 from typing import AsyncGenerator, List, Optional, TypedDict
@@ -38,9 +41,12 @@ class HistoryMessage(TypedDict):
 
 
 def retrieve(
-    query: str, user_id: int, chat_id: int, top_k: int = DEFAULT_TOP_K
+    query: str, user_id: int, chat_id: Optional[int] = None, top_k: int = DEFAULT_TOP_K
 ) -> List[SearchResult]:
-    """Embed `query` and search Qdrant, scoped to (user_id, chat_id)."""
+    """Embed `query` and search Qdrant, always scoped to `user_id`. Pass
+    `chat_id` to additionally restrict retrieval to just that chat's
+    uploads; leave it `None` (the default) to search across every chat the
+    user owns."""
     embedding_client = get_embedding_client()
     embedding_config = get_embedding_config()
     assert embedding_config is not None  # caller must check azure_ai_configured() first
@@ -53,7 +59,7 @@ def retrieve(
 
 def _build_context_block(chunks: List[SearchResult]) -> str:
     if not chunks:
-        return "(no matching document excerpts were found in this chat)"
+        return "(no matching document excerpts were found)"
     return "\n\n---\n\n".join(f"[{chunk.filename}, p.{chunk.page_number}]\n{chunk.text}" for chunk in chunks)
 
 

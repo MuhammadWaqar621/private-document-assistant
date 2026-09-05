@@ -1,6 +1,6 @@
 """
 Message-sending endpoint: persist a user message, then stream back an
-assistant reply grounded in the chat's own uploaded documents (RAG).
+assistant reply grounded in the user's uploaded documents (RAG).
 
 This is one of the two places (with app/api/documents.py) that touches
 both the DB/auth stack and app/engine/* - it checks auth/ownership,
@@ -8,10 +8,17 @@ persists the user Message row, calls the plain engine functions
 (engine.rag.retrieve / engine.rag.stream_answer - no ORM objects in or
 out), streams the tokens back over Server-Sent Events as they arrive, then
 persists the full assistant reply once the stream completes.
+
+Retrieval scope: `MessageCreate.scope` picks between the two supported
+modes - "all" (the default) searches every document the current user has
+uploaded across every one of their chats, "chat" restricts retrieval to
+just this chat's uploads. Either way, retrieval is always scoped to the
+current user (app/engine/qdrant_client.py's `user_id` filter is
+unconditional) - only the `chat_id` narrowing is opt-in.
 """
 
 import json
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -29,6 +36,11 @@ router = APIRouter(prefix="/api/chats/{chat_id}/messages", tags=["messages"])
 
 class MessageCreate(BaseModel):
     content: str
+    # "all" (default): retrieve from every document this user has uploaded,
+    # across all of their chats. "chat": restrict retrieval to just this
+    # chat's uploads (opt-in narrowing - see app/engine/qdrant_client.py's
+    # search() docstring for the underlying Qdrant filter).
+    scope: Literal["all", "chat"] = "all"
 
 
 def _get_owned_chat(db: Session, chat_id: int, user: User) -> Chat:
@@ -71,10 +83,15 @@ async def send_message(
     db.add(user_message)
     db.commit()
 
-    # Retrieval is scoped to (user_id, chat_id) - see
-    # app/engine/qdrant_client.py's search() filter, the isolation
-    # boundary this whole feature depends on.
-    retrieved = retrieve(body.content, user_id=current_user.id, chat_id=chat_id)
+    # scope="all" (default): retrieve from every chat this user owns
+    # (chat_id=None - no chat_id filter applied in Qdrant). scope="chat":
+    # restrict to this chat only. Either way, app/engine/qdrant_client.py's
+    # search() always filters by user_id - that part is never optional.
+    retrieved = retrieve(
+        body.content,
+        user_id=current_user.id,
+        chat_id=chat_id if body.scope == "chat" else None,
+    )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         full_text = ""

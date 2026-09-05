@@ -36,19 +36,24 @@ flowchart TB
     FE -- "HTTP /api/* + SSE" --> API
     API -- "plain args in, plain data out" --> ENGINE
     API -- "SQLAlchemy" --> PG
-    ENGINE -- "vector upsert/search,<br/>filtered by user_id+chat_id" --> QD
+    ENGINE -- "vector upsert/search,<br/>always filtered by user_id,<br/>optionally by chat_id" --> QD
     ENGINE -- "embeddings + chat completions" --> AZ
 ```
 
-**Per-chat document isolation:** a document uploaded in one chat is only
-ever retrievable from *that* chat, for *that* user. This isn't just a UI
-convention - it's enforced twice: the `documents` table's `chat_id`/
-`user_id` columns scope every DB query in the API layer, and every point
-stored in Qdrant carries the same `chat_id`/`user_id` in its payload, with
-`engine/qdrant_client.py`'s `search()` applying both as **required**
-(`must`) filter conditions on every vector search - not an application-
-level convention that could be forgotten in one code path, but the actual
-query sent to the vector database every single time.
+**Document retrieval scope:** by default, a question asked in *any* chat
+draws on *every* document that user has uploaded, across *all* of their
+chats - so a document uploaded in chat B can answer a question asked in
+chat A, as long as both belong to the same user. Checking **"Only search
+this chat's documents"** in the message input narrows retrieval down to
+just the currently-selected chat's uploads. In both modes, retrieval is
+**always** scoped to the authenticated user - one user's documents are
+never retrievable by another, regardless of scope. This isn't a UI
+convention - `engine/qdrant_client.py`'s `search()` applies a `user_id`
+`must` filter condition unconditionally on every vector search, and only
+adds a `chat_id` `must` condition when the caller explicitly asks for the
+chat-scoped mode. See "Document upload + RAG chat flow" below for exactly
+how the two modes map to the `scope` field on
+`POST /api/chats/{chat_id}/messages`.
 
 - **Backend** — Python 3.11+, FastAPI, SQLAlchemy + Alembic for migrations,
   Postgres for relational data (users, chats, messages, documents), Qdrant
@@ -96,18 +101,29 @@ query sent to the vector database every single time.
      (unsupported file type, extraction error, embedding/Qdrant failure)
      it becomes `status=failed` with a human-readable `error_message` -
      the upload request itself never crashes.
-2. **Ask a question** — `POST /api/chats/{chat_id}/messages` persists the
-   user's message, calls `app/engine/rag.retrieve()` (embed the question,
-   search Qdrant filtered to this `user_id`+`chat_id`), then
-   `app/engine/rag.stream_answer()` streams the Azure chat completion back
-   token-by-token over **Server-Sent Events** (`text/event-stream`) - real
-   incremental tokens, not a spinner followed by the whole answer at once.
-   Once the stream finishes, the full assistant reply is persisted as a
-   `Message` row (`role=assistant`).
+2. **Ask a question** — `POST /api/chats/{chat_id}/messages` takes
+   `{content, scope}` (`scope` is `"all"` or `"chat"`, defaulting to
+   `"all"` when omitted), persists the user's message, calls
+   `app/engine/rag.retrieve()` (embed the question, search Qdrant always
+   filtered by `user_id`, and additionally by `chat_id` only when
+   `scope="chat"`), then `app/engine/rag.stream_answer()` streams the
+   Azure chat completion back token-by-token over **Server-Sent Events**
+   (`text/event-stream`) - real incremental tokens, not a spinner followed
+   by the whole answer at once. Once the stream finishes, the full
+   assistant reply is persisted as a `Message` row (`role=assistant`).
+   - `scope="all"` (the default): retrieval draws from every document the
+     current user has uploaded, across every chat they own - a document
+     uploaded in chat B can answer a question asked in chat A.
+   - `scope="chat"`: retrieval is additionally restricted to just the
+     current chat's uploads - the frontend's "Only search this chat's
+     documents" checkbox opts into this.
+   - Either way, the `user_id` filter is unconditional - one user's
+     documents are never retrievable by another, regardless of scope.
 3. **Frontend** — the chat input uses a manual `fetch` + `ReadableStream`
    reader (not the browser `EventSource` API, which can't attach a Bearer
    token header) to render tokens as they arrive; see
-   `frontend/src/lib/chatStream.ts`.
+   `frontend/src/lib/chatStream.ts`. A checkbox next to the input controls
+   which `scope` value is sent.
 
 ### Synchronous ingestion (a deliberate tradeoff)
 
@@ -141,7 +157,7 @@ querynest/
 │   │   │   ├── azure_client.py  # Azure OpenAI client construction (embeddings + chat)
 │   │   │   ├── extraction.py    # file bytes -> [(page_number, text), ...]
 │   │   │   ├── chunking.py      # page text -> embedding-sized chunks
-│   │   │   ├── qdrant_client.py # vector storage/search, user_id+chat_id isolation
+│   │   │   ├── qdrant_client.py # vector storage/search - user_id always filtered, chat_id optional
 │   │   │   ├── ingestion.py     # extract -> chunk -> embed -> upsert (no DB writes)
 │   │   │   └── rag.py           # retrieve() + stream_answer() for the chat endpoint
 │   │   └── api/
@@ -214,10 +230,13 @@ uploaded document:
    - Type a question about the document's content into the message box
      at the bottom and hit **Send** - the assistant's answer streams in
      token-by-token, with a `(filename, p.N)`-style citation.
-   - Documents you upload in one chat are **only** usable for questions
-     asked in that same chat (see "Per-chat document isolation" above) -
-     create a second chat and upload a different document to see this in
-     action: a question in chat A can't be answered from chat B's file.
+   - By default, a question in this chat can be answered from **any**
+     document you've uploaded, in any of your chats (see "Document
+     retrieval scope" above) - create a second chat, upload a different
+     document there, and ask about it from the first chat to see this in
+     action. Check **"Only search this chat's documents"** below the
+     message box to restrict a question to just the current chat's
+     uploads instead.
 7. **Other useful URLs:**
    - Backend health check: http://localhost:8000/health
    - Backend config status: http://localhost:8000/api/config/status
@@ -345,8 +364,8 @@ leaves it blank is still considered fully configured. See
 
 Phase 2 added email/password + Google OAuth authentication (JWT access +
 refresh tokens) and Postgres-backed chat/message history, sitting behind
-per-user ownership checks that this phase's per-chat document isolation
-builds directly on top of (see "Per-chat document isolation" above).
+per-user ownership checks that this phase's document retrieval scoping
+builds directly on top of (see "Document retrieval scope" above).
 
 ### Database migrations (Alembic)
 
@@ -412,7 +431,7 @@ below follow the exact same pattern.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /api/chats/{chat_id}/messages` | `{content}` - persists the user message, retrieves matching chunks from Qdrant (scoped to this chat + user only), and **streams** the assistant's answer back as Server-Sent Events (`event: token` per token, `event: done` at the end, `event: error` on failure) via `StreamingResponse`. The full reply is persisted as an assistant `Message` once the stream completes. **404** if the chat isn't the caller's. **503** if Azure OpenAI isn't configured (checked *before* the stream starts). |
+| `POST /api/chats/{chat_id}/messages` | `{content, scope}` - `scope` is `"all"` (default, if omitted) or `"chat"`. Persists the user message, retrieves matching chunks from Qdrant (always scoped to the caller's `user_id`; additionally scoped to this `chat_id` only when `scope="chat"`), and **streams** the assistant's answer back as Server-Sent Events (`event: token` per token, `event: done` at the end, `event: error` on failure) via `StreamingResponse`. The full reply is persisted as an assistant `Message` once the stream completes. **404** if the chat isn't the caller's. **503** if Azure OpenAI isn't configured (checked *before* the stream starts). |
 
 ### Manual test flow
 
@@ -439,6 +458,8 @@ curl -X POST http://localhost:8000/api/chats/1/documents \
 # -> {"id": 1, "filename": "your.pdf", "status": "ready", "error_message": null, ...}
 
 # 5. ask a question about it - the answer streams back as SSE
+# (scope defaults to "all" when omitted - this searches every chat this
+# user owns, not just chat 1; add "scope":"chat" to restrict to chat 1 only)
 curl -N -X POST http://localhost:8000/api/chats/1/messages \
   -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
   -d '{"content":"What does this document say about X?"}'
@@ -460,20 +481,34 @@ features that depend on secrets which haven't been provided yet - when
 `azure_ai` is `false`, the chat input is disabled entirely with a
 "Configuration missing" banner (see `AppShellPage.tsx`).
 
-### Verifying per-chat isolation yourself
+### Verifying retrieval scope yourself
 
 This is the property the whole feature depends on, so it's worth checking
-directly rather than trusting the code:
+directly rather than trusting the code. There are two things to prove:
+default (`scope="all"`) retrieval correctly reaches across a user's own
+chats, and both modes correctly refuse to cross into another user's data.
 
-1. Create two chats, upload a different document to each.
-2. In chat A, ask a question that could only be answered from chat B's
-   document. The answer should say the excerpts don't contain that
-   information - not leak chat B's content.
-3. For a lower-level check, call `app/engine/rag.retrieve()` directly (a
-   plain function, no HTTP needed) with chat A's `chat_id` but a query
-   about chat B's content, and confirm it returns 0 results or only chat
-   A's chunks - this proves the Qdrant `must` filter itself is doing the
-   work, not just that the LLM chose to follow its instructions.
+1. **Default scope reaches across your own chats:** create chat A (no
+   documents) and chat B (upload a document to it), then ask chat A a
+   question that can only be answered from chat B's document, with
+   `scope` omitted/`"all"`. The answer should come back correctly
+   grounded in chat B's document, with a citation - this is the intended
+   behavior now, not a leak.
+2. **Chat-scoped mode actually restricts:** ask that same question in
+   chat A again, this time with `"scope":"chat"`. The answer should now
+   say the excerpts don't contain that information, since chat A has no
+   documents of its own.
+3. **Cross-user isolation holds in both modes:** log in as a different
+   user (who has uploaded nothing) and ask the same question, with scope
+   omitted (`"all"`). The answer must still come back empty - the
+   `user_id` filter is unconditional regardless of scope, so one user's
+   documents are never reachable by another no matter which mode is used.
+4. For a lower-level check on any of the above, call
+   `app/engine/rag.retrieve()` directly (a plain function, no HTTP
+   needed) with the relevant `user_id`/`chat_id` combination and inspect
+   the returned chunks - this proves the Qdrant `must` filter itself is
+   doing the work, not just that the LLM chose to follow its prompt
+   instructions.
 
 ## Roadmap
 
@@ -483,9 +518,10 @@ directly rather than trusting the code:
   and the frontend auth + chat-shell pages.
 - **Phase 3 (this phase):** the `app/engine/` RAG package (extraction,
   chunking, Azure OpenAI embeddings/chat, Qdrant storage/search with
-  per-chat isolation), document upload/list/delete endpoints, a streaming
-  (SSE) message-send endpoint, and the frontend upload widget + streaming
-  chat input.
+  per-user isolation and an opt-in per-chat retrieval scope), document
+  upload/list/delete endpoints, a streaming (SSE) message-send endpoint,
+  and the frontend upload widget + streaming chat input with a
+  chat-scope checkbox.
 - **Phase 4 (next):** a full polished end-to-end Docker demo pass with
   screenshots in this README, and an automated test suite (unit tests for
   `app/engine/` - chunking boundaries, the Qdrant isolation filter - plus

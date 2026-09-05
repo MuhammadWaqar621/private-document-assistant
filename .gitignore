@@ -23,8 +23,8 @@ venv/
 # Document upload storage (used in a later phase)
 storage/
 
-# Local Claude Code settings (not relevant to other contributors)
-.claude/settings.local.json
+# Local Claude Code settings/config (not relevant to other contributors)
+.claude/
 
 # Editors / OS
 .vscode/

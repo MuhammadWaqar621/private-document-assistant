@@ -6,15 +6,18 @@ optional QDRANT_API_KEY for Qdrant Cloud) - see azure_client.py's module
 docstring for why this package avoids importing app.core.config.
 
 MULTI-TENANT ISOLATION: every point upserted here carries a `user_id` and
-`chat_id` payload field, and search() filters on BOTH as required `must`
-conditions. This is the entire security boundary a document uploaded in
-one chat never becomes retrievable from a different chat, or a different
-user's chat, even if the embeddings are near-identical. Do not weaken this
-filter (e.g. to an `should` clause, or to only one of the two fields)
-without a very good reason - see the isolation tests exercising this in
-the manual verification section of the README/CI, and cover it with a unit
-test (see backend/tests/test_qdrant_isolation.py) whenever this file
-changes.
+`chat_id` payload field. `search()`'s `user_id` filter is ALWAYS applied
+and is non-negotiable - a document belonging to one user is never
+retrievable by another, regardless of scope. The `chat_id` filter is
+OPTIONAL: by default (`chat_id=None`) retrieval draws from every chat the
+user owns, so a question in chat A can be answered from a document
+uploaded in chat B, as long as both belong to the same user - this is the
+product's default "search everything I've uploaded" behavior. Passing an
+explicit `chat_id` narrows retrieval to just that chat's uploads (the
+frontend's "Only search this chat's documents" checkbox opts into this).
+Do not weaken the `user_id` condition (e.g. to a `should` clause, or drop
+it) without a very good reason - see the isolation tests exercising this
+in the manual verification section of the README.
 """
 
 import os
@@ -136,22 +139,33 @@ def delete_document(document_id: int, client: Optional[QdrantClient] = None) -> 
 def search(
     query_embedding: List[float],
     user_id: int,
-    chat_id: int,
+    chat_id: Optional[int] = None,
     top_k: int = 5,
     client: Optional[QdrantClient] = None,
 ) -> List[SearchResult]:
-    """Vector search scoped to (user_id, chat_id) - both are REQUIRED `must`
-    filter conditions. This is the multi-tenant isolation boundary: a chunk
-    stored under a different user_id or a different chat_id is never
-    returned here, no matter how similar its embedding is to the query."""
+    """Vector search scoped to `user_id` (always) and, optionally, `chat_id`.
+
+    `user_id` is a REQUIRED `must` filter condition every time - a chunk
+    stored under a different user_id is never returned here, no matter how
+    similar its embedding is to the query. This is the non-negotiable
+    multi-tenant isolation boundary between users.
+
+    `chat_id` is OPTIONAL. Leave it `None` (the default) to search across
+    every chat the user owns - the product's default behavior, where a
+    document uploaded in one chat can answer a question asked in another,
+    as long as both are the same user's. Pass an explicit `chat_id` to
+    additionally restrict results to that one chat's uploads (opt-in,
+    narrower scope)."""
     client = client or get_qdrant_client()
 
-    query_filter = qmodels.Filter(
-        must=[
-            qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
-            qmodels.FieldCondition(key="chat_id", match=qmodels.MatchValue(value=chat_id)),
-        ]
-    )
+    must_conditions = [
+        qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
+    ]
+    if chat_id is not None:
+        must_conditions.append(
+            qmodels.FieldCondition(key="chat_id", match=qmodels.MatchValue(value=chat_id))
+        )
+    query_filter = qmodels.Filter(must=must_conditions)
 
     hits = client.search(
         collection_name=COLLECTION_NAME,

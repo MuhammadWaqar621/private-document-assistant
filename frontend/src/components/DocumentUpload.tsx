@@ -105,9 +105,14 @@ export default function DocumentUpload({
       </div>
 
       <p className="mt-2 text-xs text-slate-400">
-        Documents uploaded here are only usable for questions asked in{" "}
-        <span className="font-medium text-slate-500">this chat</span> - they
-        aren't shared with your other chats.
+        By default, questions in any of your chats can draw on documents
+        uploaded here - use the{" "}
+        <span className="font-medium text-slate-500">
+          "Only search this chat's documents"
+        </span>{" "}
+        checkbox below the message box to restrict a question to just this
+        chat's uploads. Either way, your documents are never visible to
+        other users.
       </p>
 
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}

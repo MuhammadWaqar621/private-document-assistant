@@ -33,6 +33,11 @@ export default function AppShellPage() {
   const [messageInput, setMessageInput] = useState("");
   const [sending, setSending] = useState(false);
   const [streamingReply, setStreamingReply] = useState<string | null>(null);
+  // Unchecked by default: retrieval draws from every document the user has
+  // uploaded across all of their chats. Checking this restricts retrieval
+  // to just the currently-selected chat's uploads (scope: "chat" in the
+  // POST body - see lib/chatStream.ts).
+  const [chatScopeOnly, setChatScopeOnly] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Google OAuth redirects back here as /app?access_token=...&refresh_token=...
@@ -207,7 +212,7 @@ export default function AppShellPage() {
       setSending(false);
     };
 
-    await streamChatMessage(chatId, content, {
+    await streamChatMessage(chatId, content, chatScopeOnly ? "chat" : "all", {
       onToken: (text) => setStreamingReply((prev) => (prev ?? "") + text),
       onError: (message) => setError(message),
       onDone: finish,
@@ -345,6 +350,19 @@ export default function AppShellPage() {
             </div>
 
             <form onSubmit={handleSendMessage} className="border-t border-slate-200 p-4">
+              <label className="mb-2 flex items-center gap-2 text-xs text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={chatScopeOnly}
+                  onChange={(e) => setChatScopeOnly(e.target.checked)}
+                  disabled={chatInputDisabled}
+                  className="h-3.5 w-3.5 rounded border-slate-300 disabled:cursor-not-allowed"
+                />
+                Only search this chat's documents
+                <span className="text-slate-400">
+                  (unchecked: searches every document you've uploaded across all your chats)
+                </span>
+              </label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -353,7 +371,7 @@ export default function AppShellPage() {
                   disabled={chatInputDisabled}
                   placeholder={
                     azureConfigured
-                      ? "Ask a question about this chat's documents..."
+                      ? "Ask a question about your uploaded documents..."
                       : "Configuration missing - set Azure OpenAI credentials in .env"
                   }
                   className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
