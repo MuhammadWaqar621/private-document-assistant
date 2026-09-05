@@ -6,7 +6,7 @@ import AuthLayout from "../components/AuthLayout";
 import { ApiError, api } from "../lib/api";
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
+  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white";
 
 function isSmtpNotConfigured(err: ApiError): boolean {
   const detail = (err.body as { detail?: { error?: string } } | null)?.detail;
@@ -46,11 +46,16 @@ export default function ForgotPasswordPage() {
       subtitle="Enter your email and we'll send you a reset link."
     >
       {message ? (
-        <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">{message}</p>
+        <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800 dark:bg-green-950 dark:text-green-300">
+          {message}
+        </p>
       ) : (
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div>
-            <label htmlFor="email" className="mb-1 block text-sm font-medium text-slate-700">
+            <label
+              htmlFor="email"
+              className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300"
+            >
               Email
             </label>
             <input
@@ -65,7 +70,9 @@ export default function ForgotPasswordPage() {
           </div>
 
           {error && (
-            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{error}</p>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              {error}
+            </p>
           )}
 
           <button
@@ -78,7 +85,7 @@ export default function ForgotPasswordPage() {
         </form>
       )}
 
-      <p className="mt-5 text-center text-sm text-slate-500">
+      <p className="mt-5 text-center text-sm text-slate-500 dark:text-slate-400">
         <Link to="/login" className="font-medium text-brand-600 hover:underline">
           Back to log in
         </Link>

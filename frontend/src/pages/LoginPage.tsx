@@ -13,7 +13,8 @@ type TokenResponse = {
 };
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
+  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white";
+const labelClass = "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -46,7 +47,7 @@ export default function LoginPage() {
     <AuthLayout title="Log in" subtitle="Welcome back.">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
-          <label htmlFor="email" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="email" className={labelClass}>
             Email
           </label>
           <input
@@ -61,7 +62,7 @@ export default function LoginPage() {
         </div>
 
         <div>
-          <label htmlFor="password" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="password" className={labelClass}>
             Password
           </label>
           <input
@@ -75,7 +76,7 @@ export default function LoginPage() {
           />
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         <button
           type="submit"
@@ -86,8 +87,8 @@ export default function LoginPage() {
         </button>
       </form>
 
-      <div className="mt-5 flex flex-col gap-1 text-center text-sm text-slate-500">
-        <Link to="/forgot-password" className="hover:text-slate-700">
+      <div className="mt-5 flex flex-col gap-1 text-center text-sm text-slate-500 dark:text-slate-400">
+        <Link to="/forgot-password" className="hover:text-slate-700 dark:hover:text-slate-200">
           Forgot your password?
         </Link>
         <span>

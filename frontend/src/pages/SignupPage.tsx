@@ -14,7 +14,8 @@ type TokenResponse = {
 };
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
+  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white";
+const labelClass = "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300";
 
 export default function SignupPage() {
   const navigate = useNavigate();
@@ -59,7 +60,7 @@ export default function SignupPage() {
     <AuthLayout title="Create your account" subtitle="Start chatting with your documents.">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
-          <label htmlFor="email" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="email" className={labelClass}>
             Email
           </label>
           <input
@@ -74,7 +75,7 @@ export default function SignupPage() {
         </div>
 
         <div>
-          <label htmlFor="password" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="password" className={labelClass}>
             Password
           </label>
           <input
@@ -86,11 +87,11 @@ export default function SignupPage() {
             onChange={(e) => setPassword(e.target.value)}
             className={inputClass}
           />
-          <p className="mt-1 text-xs text-slate-400">{PASSWORD_POLICY_HINT}</p>
+          <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{PASSWORD_POLICY_HINT}</p>
         </div>
 
         <div>
-          <label htmlFor="confirmPassword" className="mb-1 block text-sm font-medium text-slate-700">
+          <label htmlFor="confirmPassword" className={labelClass}>
             Confirm password
           </label>
           <input
@@ -104,7 +105,7 @@ export default function SignupPage() {
           />
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         <button
           type="submit"
@@ -115,7 +116,7 @@ export default function SignupPage() {
         </button>
       </form>
 
-      <p className="mt-5 text-center text-sm text-slate-500">
+      <p className="mt-5 text-center text-sm text-slate-500 dark:text-slate-400">
         Already have an account?{" "}
         <Link to="/login" className="font-medium text-brand-600 hover:underline">
           Log in

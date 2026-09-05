@@ -13,9 +13,9 @@ type Props = {
 };
 
 const statusStyles: Record<DocumentOut["status"], string> = {
-  processing: "bg-amber-50 text-amber-700",
-  ready: "bg-emerald-50 text-emerald-700",
-  failed: "bg-red-50 text-red-700",
+  processing: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+  ready: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  failed: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300",
 };
 
 /**
@@ -70,9 +70,11 @@ export default function DocumentUpload({
             <li
               key={doc.id}
               title={doc.error_message ?? undefined}
-              className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs shadow-sm"
+              className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900"
             >
-              <span className="max-w-[10rem] truncate text-slate-700">{doc.filename}</span>
+              <span className="max-w-[10rem] truncate text-slate-700 dark:text-slate-300">
+                {doc.filename}
+              </span>
               <span
                 className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${statusStyles[doc.status]}`}
               >
@@ -84,7 +86,7 @@ export default function DocumentUpload({
       )}
 
       {error && (
-        <p className="flex items-center gap-1 text-xs text-red-600">
+        <p className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
           <X size={12} /> {error}
         </p>
       )}
@@ -94,7 +96,7 @@ export default function DocumentUpload({
         onClick={() => !disabled && !uploading && inputRef.current?.click()}
         disabled={disabled || uploading}
         title="Attach a .pdf/.docx/.txt/.jpg/.png document to this chat"
-        className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
       >
         <Paperclip size={13} />
         {uploading ? "Uploading..." : "Attach document"}
