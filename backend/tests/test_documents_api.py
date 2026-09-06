@@ -31,6 +31,14 @@ def _upload(client, token_body, chat_id, filename="notes.txt", content=b"hello w
     )
 
 
+def _upload_library(client, token_body, filename="notes.txt", content=b"hello world"):
+    return client.post(
+        "/api/documents",
+        headers=auth_headers(token_body),
+        files={"file": (filename, content, "text/plain")},
+    )
+
+
 def test_upload_returns_503_when_azure_not_configured(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: False)
     user = signup(client)
@@ -182,3 +190,135 @@ def test_delete_document_succeeds_for_its_owner(client, monkeypatch, tmp_path):
 
     listing = client.get(f"/api/chats/{chat['id']}/documents", headers=auth_headers(owner))
     assert listing.json() == []
+
+
+# --- account-level "library" documents (POST /api/documents, no chat_id) --
+
+
+def test_library_upload_requires_no_chat_and_transitions_to_ready(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    captured_kwargs = {}
+
+    def _fake_ingest(**kwargs):
+        captured_kwargs.update(kwargs)
+        return IngestionResult(success=True, chunk_count=2)
+
+    monkeypatch.setattr(documents_module, "ingest_document", _fake_ingest)
+
+    user = signup(client)
+    response = _upload_library(client, user, filename="handbook.pdf")
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["filename"] == "handbook.pdf"
+    # The shared ingestion pipeline is called with chat_id=None - never a
+    # chat, since this document isn't tied to one.
+    assert captured_kwargs["chat_id"] is None
+
+
+def test_library_documents_are_separate_from_chat_documents(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        documents_module,
+        "ingest_document",
+        lambda **kwargs: IngestionResult(success=True, chunk_count=1),
+    )
+
+    user = signup(client)
+    chat = _create_chat(client, user)
+    _upload(client, user, chat["id"], filename="chat-only.txt")
+    _upload_library(client, user, filename="library-only.txt")
+
+    chat_listing = client.get(f"/api/chats/{chat['id']}/documents", headers=auth_headers(user))
+    assert [d["filename"] for d in chat_listing.json()] == ["chat-only.txt"]
+
+    library_listing = client.get("/api/documents", headers=auth_headers(user))
+    assert [d["filename"] for d in library_listing.json()] == ["library-only.txt"]
+
+
+def test_library_documents_are_scoped_to_their_uploader(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        documents_module,
+        "ingest_document",
+        lambda **kwargs: IngestionResult(success=True, chunk_count=1),
+    )
+
+    owner = signup(client)
+    other_user = signup(client)
+    _upload_library(client, owner, filename="owner-only.txt")
+
+    # A second user's library listing must never show the first user's
+    # document - the only isolation boundary for a library upload, since
+    # there's no chat/ownership check possible (there's no chat at all).
+    other_listing = client.get("/api/documents", headers=auth_headers(other_user))
+    assert other_listing.json() == []
+
+    owner_listing = client.get("/api/documents", headers=auth_headers(owner))
+    assert [d["filename"] for d in owner_listing.json()] == ["owner-only.txt"]
+
+
+def test_delete_library_document_404s_for_another_user(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        documents_module,
+        "ingest_document",
+        lambda **kwargs: IngestionResult(success=True, chunk_count=1),
+    )
+    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+
+    owner = signup(client)
+    intruder = signup(client)
+    doc = _upload_library(client, owner).json()
+
+    response = client.delete(f"/api/documents/{doc['id']}", headers=auth_headers(intruder))
+    assert response.status_code == 404
+
+    # Still there for the actual owner afterward.
+    owner_listing = client.get("/api/documents", headers=auth_headers(owner))
+    assert len(owner_listing.json()) == 1
+
+
+def test_delete_library_document_succeeds_for_its_owner(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        documents_module,
+        "ingest_document",
+        lambda **kwargs: IngestionResult(success=True, chunk_count=1),
+    )
+    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+
+    owner = signup(client)
+    doc = _upload_library(client, owner).json()
+
+    response = client.delete(f"/api/documents/{doc['id']}", headers=auth_headers(owner))
+    assert response.status_code == 204
+
+    listing = client.get("/api/documents", headers=auth_headers(owner))
+    assert listing.json() == []
+
+
+def test_a_chat_scoped_document_never_appears_in_the_library_listing(client, monkeypatch, tmp_path):
+    # A document uploaded to a specific chat has chat_id set - it must
+    # never show up in the account-level library listing, which only
+    # returns chat_id IS NULL rows.
+    monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
+    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        documents_module,
+        "ingest_document",
+        lambda **kwargs: IngestionResult(success=True, chunk_count=1),
+    )
+
+    user = signup(client)
+    chat = _create_chat(client, user)
+    _upload(client, user, chat["id"], filename="chat-scoped.txt")
+
+    library_listing = client.get("/api/documents", headers=auth_headers(user))
+    assert library_listing.json() == []

@@ -1,12 +1,21 @@
 """
-Document upload/list/delete endpoints, scoped to a chat the current user
-owns - same ownership pattern as app/api/chats.py (404, not 403, for a chat
-that exists but belongs to someone else).
+Document upload/list/delete endpoints - two routers, sharing the same
+upload/ingest pipeline (`_save_and_ingest()` below):
 
-This is one of the two places (with app/api/messages.py) that touches both
-the DB/auth stack and app/engine/* - it checks auth/ownership, saves the
-raw upload to local disk, calls the plain engine ingestion function, and
-persists the resulting status. Ingestion runs synchronously inside the
+- `router` (prefix /api/chats/{chat_id}/documents): a document scoped to
+  one chat the current user owns - same ownership pattern as
+  app/api/chats.py (404, not 403, for a chat that exists but belongs to
+  someone else).
+- `library_router` (prefix /api/documents): an account-level document, not
+  tied to any chat (`chat_id=None`) - automatically searchable from every
+  chat the user owns via the default scope="all" retrieval, without
+  needing to attach it to a specific chat first. See
+  app/models/document.py's module docstring for the isolation reasoning.
+
+Both are one of the two places (with app/api/messages.py) that touch both
+the DB/auth stack and app/engine/* - they check auth/ownership, save the
+raw upload to local disk, call the plain engine ingestion function, and
+persist the resulting status. Ingestion runs synchronously inside the
 request for this portfolio project's scope: on success the Document row
 becomes status=ready, on failure status=failed + error_message, but the
 request itself never crashes either way. A production deployment would
@@ -33,6 +42,7 @@ from app.engine.qdrant_client import delete_document as qdrant_delete_document
 from app.models import Chat, Document, DocumentStatus, User
 
 router = APIRouter(prefix="/api/chats/{chat_id}/documents", tags=["documents"])
+library_router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 # Where uploaded originals live on disk: storage/{user_id}/{document_id}/original.<ext>
 # "storage" is gitignored (see .gitignore) and, under docker-compose, lives
@@ -82,6 +92,13 @@ def _get_owned_document(db: Session, chat_id: int, document_id: int, user: User)
     return document
 
 
+def _get_owned_library_document(db: Session, document_id: int, user: User) -> Document:
+    document = db.get(Document, document_id)
+    if document is None or document.chat_id is not None or document.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return document
+
+
 def _azure_not_configured_error() -> HTTPException:
     # Error code kept as "azure_ai_not_configured" for backward
     # compatibility (see app/engine/azure_client.py's azure_ai_configured()
@@ -102,18 +119,19 @@ def _azure_not_configured_error() -> HTTPException:
     )
 
 
-# --- Endpoints ---------------------------------------------------------------
+# --- Shared upload/ingest pipeline -----------------------------------------
 
 
-@router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-async def upload_document(
-    chat_id: int,
-    file: UploadFile,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+async def _save_and_ingest(
+    db: Session, user: User, file: UploadFile, chat_id: Optional[int]
 ) -> Document:
-    _get_owned_chat(db, chat_id, current_user)
-
+    """Save the upload to disk, create the Document row, and run ingestion
+    synchronously - shared by both the chat-scoped and account-level
+    library upload endpoints below. `chat_id=None` for a library upload;
+    everything else (extraction, chunking, embedding, Qdrant upsert,
+    supported file types) is identical for both - a library document goes
+    through the exact same app/engine/extraction.py pipeline (PDF, DOCX,
+    TXT, and OCR'd images), it's just not associated with one chat."""
     if not azure_ai_configured():
         raise _azure_not_configured_error()
 
@@ -121,7 +139,7 @@ async def upload_document(
     raw_bytes = await file.read()
 
     document = Document(
-        user_id=current_user.id,
+        user_id=user.id,
         chat_id=chat_id,
         filename=filename,
         storage_path="",
@@ -133,7 +151,7 @@ async def upload_document(
 
     raw_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     ext = raw_ext if raw_ext in ALLOWED_EXTENSIONS else "bin"
-    doc_dir = STORAGE_ROOT / str(current_user.id) / str(document.id)
+    doc_dir = STORAGE_ROOT / str(user.id) / str(document.id)
     doc_dir.mkdir(parents=True, exist_ok=True)
     storage_path = doc_dir / f"original.{ext}"
     storage_path.write_bytes(raw_bytes)
@@ -145,7 +163,7 @@ async def upload_document(
         raw_bytes=raw_bytes,
         filename=filename,
         document_id=document.id,
-        user_id=current_user.id,
+        user_id=user.id,
         chat_id=chat_id,
     )
 
@@ -159,6 +177,20 @@ async def upload_document(
     db.commit()
     db.refresh(document)
     return document
+
+
+# --- Chat-scoped endpoints ---------------------------------------------------
+
+
+@router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def upload_document(
+    chat_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Document:
+    _get_owned_chat(db, chat_id, current_user)
+    return await _save_and_ingest(db, current_user, file, chat_id=chat_id)
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -176,16 +208,7 @@ def list_documents(
     )
 
 
-@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(
-    chat_id: int,
-    document_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> None:
-    _get_owned_chat(db, chat_id, current_user)
-    document = _get_owned_document(db, chat_id, document_id, current_user)
-
+def _delete_document(db: Session, document: Document) -> None:
     try:
         qdrant_delete_document(document.id)
     except Exception:  # noqa: BLE001 - a Qdrant hiccup shouldn't block deleting the DB row
@@ -196,3 +219,58 @@ def delete_document(
 
     db.delete(document)
     db.commit()
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(
+    chat_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    _get_owned_chat(db, chat_id, current_user)
+    document = _get_owned_document(db, chat_id, document_id, current_user)
+    _delete_document(db, document)
+
+
+# --- Account-level "library" endpoints (not tied to any chat) ---------------
+#
+# Uploaded via POST /api/documents (no chat_id in the URL or payload) -
+# automatically searchable from every chat the user owns via the default
+# scope="all" retrieval (app/engine/rag.py's retrieve()/stream_agentic_reply()
+# pass chat_id=None in that mode, and qdrant_client.search() only filters
+# on chat_id when one is explicitly given), while remaining invisible to
+# every other user, and excluded from a scope="chat"-narrowed search - see
+# app/models/document.py's module docstring.
+
+
+@library_router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def upload_library_document(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Document:
+    return await _save_and_ingest(db, current_user, file, chat_id=None)
+
+
+@library_router.get("", response_model=list[DocumentOut])
+def list_library_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[Document]:
+    return (
+        db.query(Document)
+        .filter(Document.chat_id.is_(None), Document.user_id == current_user.id)
+        .order_by(Document.created_at.desc())
+        .all()
+    )
+
+
+@library_router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_library_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    document = _get_owned_library_document(db, document_id, current_user)
+    _delete_document(db, document)

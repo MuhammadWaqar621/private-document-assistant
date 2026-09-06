@@ -34,12 +34,19 @@ def ingest_document(
     filename: str,
     document_id: int,
     user_id: int,
-    chat_id: int,
+    chat_id: Optional[int] = None,
 ) -> IngestionResult:
     """Run the full pipeline for one document. Never raises - any failure
     is captured in the returned IngestionResult so the caller can persist
     a Document.status of "failed" + error_message instead of crashing the
-    request."""
+    request.
+
+    `chat_id=None` marks an account-level "library" document (not tied to
+    any one chat) - see app/models/document.py's module docstring. It's
+    stored verbatim in the Qdrant payload (app/engine/qdrant_client.py's
+    upsert_chunks()), which is what makes a scope="all" search find it
+    from every chat while a scope="chat" search (an explicit chat_id)
+    does not."""
     if not azure_ai_configured():
         return IngestionResult(success=False, error_message="Azure OpenAI is not configured.")
 

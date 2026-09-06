@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { Lock, Loader2, MessageSquarePlus, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
+import { Library, Lock, Loader2, MessageSquarePlus, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
 
 import DocumentUpload from "../components/DocumentUpload";
+import LibraryDocumentsModal from "../components/LibraryDocumentsModal";
 import MarkdownMessage from "../components/MarkdownMessage";
 import ThemeToggle from "../components/ThemeToggle";
 import { ApiError, api } from "../lib/api";
@@ -38,6 +39,7 @@ export default function AppShellPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const [messageInput, setMessageInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -345,7 +347,7 @@ export default function AppShellPage() {
           <ThemeToggle compact />
         </div>
 
-        <div className="p-3">
+        <div className="flex flex-col gap-2 p-3">
           <button
             type="button"
             onClick={createChat}
@@ -354,6 +356,15 @@ export default function AppShellPage() {
           >
             <MessageSquarePlus size={16} />
             {creating ? "Creating..." : "New chat"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setLibraryOpen(true)}
+            title="Documents you upload here are searchable from every chat automatically"
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <Library size={16} />
+            My documents
           </button>
         </div>
 
@@ -577,7 +588,15 @@ export default function AppShellPage() {
                 />
                 Only search this chat's documents
                 <span className="text-slate-400 dark:text-slate-500">
-                  (unchecked: searches every document you've uploaded across all your chats)
+                  (unchecked: searches every document you've uploaded, including your{" "}
+                  <button
+                    type="button"
+                    onClick={() => setLibraryOpen(true)}
+                    className="underline hover:text-slate-600 dark:hover:text-slate-300"
+                  >
+                    document library
+                  </button>
+                  , across all your chats)
                 </span>
               </label>
 
@@ -634,6 +653,12 @@ export default function AppShellPage() {
           </>
         )}
       </main>
+
+      <LibraryDocumentsModal
+        open={libraryOpen}
+        onClose={() => setLibraryOpen(false)}
+        onAuthFailure={handleAuthFailure}
+      />
     </div>
   );
 }

@@ -1,9 +1,18 @@
-"""Document model - an uploaded file within a Chat, plus its ingestion status.
+"""Document model - an uploaded file, plus its ingestion status.
 
-A Document is scoped to exactly one Chat (and, transitively, one user) -
-this is the relational half of the per-chat isolation the RAG retrieval
-depends on; the other half is the Qdrant payload filter in
-app/engine/qdrant_client.py (every point also carries user_id + chat_id).
+A Document always belongs to exactly one user (`user_id`, never
+optional - the non-negotiable isolation boundary). `chat_id` is optional:
+most documents are uploaded within one Chat (via
+POST /api/chats/{chat_id}/documents) and `chat_id` records that, but a
+document can also be uploaded to the user's account-level "library" (via
+POST /api/documents, no chat involved) with `chat_id=None` - those are
+automatically searchable from every chat the user owns (the default
+scope="all" retrieval never filters on chat_id at all - see
+app/engine/qdrant_client.py's search()), while still being invisible to
+anyone else. A `chat_id="chat"`-scoped search (the "only search this
+chat's documents" checkbox) only matches an exact chat_id, so library
+documents are excluded from that narrower mode - they aren't "this
+chat's" uploads.
 
 Raw file bytes are NOT stored in Postgres - they live on local disk at
 storage/{user_id}/{document_id}/original.<ext> (see app/api/documents.py);
@@ -38,7 +47,11 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    chat_id = Column(Integer, ForeignKey("chats.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Nullable: NULL means an account-level "library" document (not tied to
+    # any chat) - see the module docstring above. A NULL chat_id is never
+    # matched by ON DELETE CASCADE, so deleting a chat can never delete a
+    # library document.
+    chat_id = Column(Integer, ForeignKey("chats.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     storage_path = Column(String, nullable=False)
     status = Column(

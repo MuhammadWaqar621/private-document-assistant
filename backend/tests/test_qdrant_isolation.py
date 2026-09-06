@@ -202,6 +202,98 @@ def test_default_scope_still_excludes_other_users(isolated_collection):
     assert [r.filename for r in results] == ["mine.pdf"]
 
 
+# --- (b2) chat_id=None points ("library" documents) are found by the ------
+# default scope alongside every chat, but excluded once a search narrows
+# to one specific chat - see app/models/document.py's module docstring.
+
+
+def test_library_document_is_found_in_default_scope_alongside_a_chat_document(isolated_collection):
+    client = isolated_collection
+    qc.upsert_chunks(
+        document_id=1,
+        user_id=1,
+        chat_id=10,
+        filename="chat-doc.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="from a chat", embedding=_vec(1))
+        ],
+        client=client,
+    )
+    qc.upsert_chunks(
+        document_id=2,
+        user_id=1,
+        chat_id=None,
+        filename="library-doc.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="from the library", embedding=_vec(2))
+        ],
+        client=client,
+    )
+
+    results = qc.search(_vec(1), user_id=1, chat_id=None, top_k=10, client=client)
+
+    filenames = {r.filename for r in results}
+    assert filenames == {"chat-doc.pdf", "library-doc.pdf"}
+
+
+def test_library_document_is_excluded_once_a_search_narrows_to_one_chat(isolated_collection):
+    client = isolated_collection
+    qc.upsert_chunks(
+        document_id=1,
+        user_id=1,
+        chat_id=10,
+        filename="chat-doc.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="from a chat", embedding=_vec(1))
+        ],
+        client=client,
+    )
+    qc.upsert_chunks(
+        document_id=2,
+        user_id=1,
+        chat_id=None,
+        filename="library-doc.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="from the library", embedding=_vec(2))
+        ],
+        client=client,
+    )
+
+    # Scoped to chat 10 specifically - the library document (chat_id=None)
+    # must never surface here, even though nothing else narrows it out.
+    results = qc.search(_vec(1), user_id=1, chat_id=10, top_k=10, client=client)
+
+    assert [r.filename for r in results] == ["chat-doc.pdf"]
+
+
+def test_library_document_still_respects_user_id_isolation(isolated_collection):
+    client = isolated_collection
+    qc.upsert_chunks(
+        document_id=1,
+        user_id=1,
+        chat_id=None,
+        filename="mine.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="mine", embedding=_vec(1))
+        ],
+        client=client,
+    )
+    qc.upsert_chunks(
+        document_id=2,
+        user_id=2,
+        chat_id=None,
+        filename="not-mine.pdf",
+        chunks_with_embeddings=[
+            ChunkWithEmbedding(chunk_index=0, page_number=1, text="not mine", embedding=_vec(2))
+        ],
+        client=client,
+    )
+
+    results = qc.search(_vec(1), user_id=1, chat_id=None, top_k=10, client=client)
+
+    assert [r.filename for r in results] == ["mine.pdf"]
+
+
 # --- (c) chat_id set ("chat" scope) restricts to that one chat only ------
 
 

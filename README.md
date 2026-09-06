@@ -254,6 +254,45 @@ ChatGPT/Claude composer pattern rather than a toolbar above the input.
 Uploaded-document chips render as their own row above this bar so they
 never crowd the input controls themselves.
 
+## Document library (shared across every chat)
+
+Every document above is scoped to one chat (`chat_id` set). There's a
+second, simpler way to upload: **`POST /api/documents`** (no chat
+involved at all) creates a `Document` with `chat_id=NULL` - an
+account-level "library" upload. It goes through the exact same
+extraction/chunking/embedding pipeline as any chat upload (same
+supported types, same OCR fallback), so nothing about *how* a document
+is read differs - only whether it's tied to one chat or not.
+
+- **Automatically searchable from every chat you own** - the default
+  `scope="all"` retrieval never filters on `chat_id` at all (see
+  `app/engine/qdrant_client.py`'s `search()`), so a library document
+  surfaces for a question in any chat without attaching it anywhere
+  first. This is the point of it: upload your reference material once
+  (a resume, a policy doc, product docs, whatever you want your
+  "personal assistant" to always know) instead of re-uploading it into
+  every new chat.
+- **Excluded once a chat's own scope narrows the search** - checking
+  "Only search this chat's documents" passes an explicit `chat_id`,
+  which requires an exact match; a library document's `chat_id` is
+  `NULL`, so it's correctly excluded from that narrower mode - it isn't
+  "this chat's" upload.
+- **Still strictly scoped to the uploading user** - the `user_id` filter
+  is unconditional regardless of `chat_id`, library documents included;
+  verified live (and in `test_qdrant_isolation.py`/`test_documents_api.py`)
+  that a second user's identical question never reaches another
+  account's library.
+- **Frontend:** the sidebar's "My documents" button (`frontend/src/
+  components/LibraryDocumentsModal.tsx`) opens a small modal to upload,
+  list, and delete library documents - separate from the per-chat
+  attach button in the composer, which still only affects the current
+  chat.
+
+`GET /api/documents` lists a user's library documents, `DELETE
+/api/documents/{document_id}` removes one (404s if it belongs to
+someone else, or if it's actually a chat-scoped document rather than a
+library one). See "Document endpoints" below for the full contract.
+
 ## Document types supported
 
 | Type | How it's read | Notes |
@@ -423,7 +462,7 @@ querynest/
 │   │       ├── config_status.py # GET /api/config/status
 │   │       ├── auth.py          # /api/auth/* (signup/login/refresh/...)
 │   │       ├── chats.py         # /api/chats/* (CRUD, auth-protected)
-│   │       ├── documents.py     # /api/chats/{id}/documents/* (upload/list/delete)
+│   │       ├── documents.py     # /api/chats/{id}/documents/* (chat-scoped) + /api/documents/* (account-level library)
 │   │       ├── messages.py      # /api/chats/{id}/messages (send + stream RAG answer)
 │   │       ├── speech.py        # /api/speech/* (transcribe, synthesize - Groq-backed)
 │   │       └── deps.py          # get_current_user dependency
@@ -700,6 +739,19 @@ below follow the exact same pattern.
 | `GET /api/chats/{chat_id}/documents` | list documents for the chat, newest first |
 | `DELETE /api/chats/{chat_id}/documents/{document_id}` | deletes the `Document` row, its Qdrant points, and its `storage/` folder |
 
+### Document library endpoints (`/api/documents`)
+
+The account-level counterpart to the chat-scoped endpoints above - same
+upload/ingest pipeline, same file types, same 503/never-crashes
+behavior, just with `chat_id=NULL` instead of a chat. See "Document
+library" above for what that changes about retrieval.
+
+| Endpoint | Notes |
+|---|---|
+| `POST /api/documents` | multipart upload (`file`) - identical pipeline to the chat-scoped upload, but the resulting `Document` has no `chat_id`, so it's searchable from every chat this user owns (default `scope="all"`) rather than one specific chat. |
+| `GET /api/documents` | list this user's library documents (`chat_id IS NULL`), newest first - never includes chat-scoped documents. |
+| `DELETE /api/documents/{document_id}` | deletes a library document (its Qdrant points and `storage/` folder too). **404** if it belongs to another user, or if that `document_id` is actually a chat-scoped document. |
+
 ### Message endpoints (`/api/chats/{chat_id}/messages`)
 
 | Endpoint | Notes |
@@ -801,12 +853,12 @@ cross into another user's data.
 
 ## Running tests
 
-`backend/tests/` holds the automated suite (97 tests) that replaced the
+`backend/tests/` holds the automated suite (106 tests) that replaced the
 purely-manual verification this project relied on through Phase 3:
 
 | File | Covers |
 |---|---|
-| `test_qdrant_isolation.py` | **The most important test file in this project** - `engine/qdrant_client.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) Qdrant collection: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, and `delete_document()` only removes the targeted document's points. |
+| `test_qdrant_isolation.py` | **The most important test file in this project** - `engine/qdrant_client.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) Qdrant collection: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, a `chat_id=None` "library" point (see "Document library" above) is found by the default scope alongside a chat document but excluded once a search narrows to one specific chat (while still respecting `user_id` isolation), and `delete_document()` only removes the targeted document's points. |
 | `test_chunking.py` | `engine/chunking.py` boundary cases - empty/whitespace-only pages, a page just under/at/over the split threshold, a page needing several chunks, a hard character-cut when a single paragraph has no boundary to split on, and `page_number`/`chunk_index` bookkeeping across multiple pages. |
 | `test_extraction.py` | `engine/extraction.py` against real fixture files (`tests/fixtures/sample.pdf`, `sample.txt`) - per-page PDF text via `pdfplumber`, TXT-as-a-single-page, invalid-UTF-8 handling, `UnsupportedFileTypeError` for an unrecognized/missing extension, and the **OCR fallback**: a page with real embedded text never invokes OCR, a page with empty/near-empty text triggers the EasyOCR/pymupdf fallback (both mocked - real OCR inference is far too slow for the automated suite), a mixed real-text/scanned document is decided per-page, and an image file is OCR'd directly. |
 | `test_llm_provider.py` | `engine/llm_provider.py`'s `LLM_PROVIDER` selection - defaults to `"groq"` for unset/blank/unrecognized values, case-insensitive `"azure"` detection, `chat_provider_configured()`/`get_active_chat_provider()` check/construct only the selected provider's client (never the other one's), with azure_client/groq_client's real client construction monkeypatched. |
@@ -814,7 +866,7 @@ purely-manual verification this project relied on through Phase 3:
 | `test_config_status.py` | `GET /api/config/status`'s provider-aware `rag` group - `true` only when embeddings AND the *currently selected* provider's own vars are set (never both providers' credentials at once), plus the `speech` group and the `llm_provider` field. |
 | `test_auth_api.py` | `/api/auth/*` integration tests via FastAPI's `TestClient` - signup, duplicate email, login, wrong password, refresh-token type-confusion, and the `jwt_not_configured`/`smtp_not_configured` 503 gates with those env vars unset. |
 | `test_chats_api.py` | `/api/chats/*` ownership checks - a chat belonging to another user 404s (indistinguishable from one that never existed), scoped listing, delete. |
-| `test_documents_api.py` | `/api/chats/{id}/documents/*` ownership checks plus the upload → status transition (`processing` → `ready`/`failed`), with `azure_ai_configured`/`ingest_document` monkeypatched to deterministic fakes so the test targets the endpoint's own status-transition logic rather than making a real Azure OpenAI/Groq call. |
+| `test_documents_api.py` | `/api/chats/{id}/documents/*` ownership checks plus the upload → status transition (`processing` → `ready`/`failed`), with `azure_ai_configured`/`ingest_document` monkeypatched to deterministic fakes so the test targets the endpoint's own status-transition logic rather than making a real Azure OpenAI/Groq call. Also covers the account-level library endpoints (`/api/documents`) - a library upload gets `chat_id=None`, library and chat-scoped listings never leak into each other, and a library document is scoped strictly to its uploader (another user's listing/delete never sees or touches it). |
 | `test_messages_api.py` | `/api/chats/{id}/messages` - `stream_agentic_reply()` (mocked to a fake deterministic async generator) is the only engine call this endpoint makes; asserts the authenticated `user_id` (never anything from the request body) and the scope-derived `chat_id` are what's passed through, plus auto-titling and the 503/404 gates. |
 | `test_speech_api.py` | `/api/speech/*` - 503 when Groq isn't configured, auth-required, happy-path wiring with `transcribe_audio`/`synthesize_speech` monkeypatched to deterministic fakes, and Groq failures surfacing as a 502 rather than a raw 500. |
 
@@ -855,7 +907,7 @@ QDRANT_TEST_URL=http://localhost:6333 pytest tests/ -v
 Expected output ends with something like:
 
 ```
-======================== 97 passed, 7 warnings in ~20s ========================
+======================== 106 passed, 7 warnings in ~20s ========================
 ```
 
 (The warnings are pytest-asyncio/passlib deprecation notices unrelated to
@@ -902,7 +954,14 @@ confirm this on your own machine.
   previously got an awkward grounded-refusal instead of a natural
   greeting, because the old design branched only on "does this user have
   any ready document anywhere," never on what the message actually asked.
-- **Phase 7 (not started):** production-shaped upgrades called out as
+- **Phase 7 (this phase):** message-attribution avatars and a unified
+  chat composer (see "Chat UI message attribution" above), Markdown
+  rendering for assistant replies (bold/lists/tables/code -
+  `MarkdownMessage.tsx`, backing `AGENT_SYSTEM_PROMPT` instructed to
+  format accordingly), and the account-level document library (see
+  "Document library" above) - upload once, searchable from every chat,
+  still strictly scoped to the uploading user.
+- **Phase 8 (not started):** production-shaped upgrades called out as
   deliberate tradeoffs above - a background task queue for ingestion
   instead of synchronous processing, and deployment configuration (this
   project targets local docker-compose only; a real deployment would also

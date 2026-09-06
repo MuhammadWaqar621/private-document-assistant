@@ -84,14 +84,20 @@ def _point_id(document_id: int, chunk_index: int) -> str:
 def upsert_chunks(
     document_id: int,
     user_id: int,
-    chat_id: int,
+    chat_id: Optional[int],
     filename: str,
     chunks_with_embeddings: List[ChunkWithEmbedding],
     client: Optional[QdrantClient] = None,
 ) -> int:
     """Upsert one document's chunks as Qdrant points. Returns the number of
     points written. Every point's payload carries user_id + chat_id, which
-    is what search() below filters on for tenant isolation."""
+    is what search() below filters on for tenant isolation. `chat_id=None`
+    (an account-level "library" document - see app/models/document.py)
+    is stored as-is; search()'s chat_id filter is only ever applied when
+    the caller passes an explicit chat_id, so a library point is still
+    found by the default scope="all" search (no chat_id filter at all)
+    but excluded from a scope="chat" search (which filters chat_id ==
+    <that chat>, which a library point's None never matches)."""
     client = client or get_qdrant_client()
     ensure_collection(client)
 

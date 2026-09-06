@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.chats import router as chats_router
 from app.api.config_status import router as config_status_router
+from app.api.documents import library_router as library_documents_router
 from app.api.documents import router as documents_router
 from app.api.messages import router as messages_router
 from app.api.speech import router as speech_router
@@ -41,6 +42,7 @@ app.include_router(config_status_router)
 app.include_router(auth_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
+app.include_router(library_documents_router)
 app.include_router(messages_router)
 app.include_router(speech_router)
 
