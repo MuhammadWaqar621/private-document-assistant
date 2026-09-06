@@ -13,13 +13,15 @@ its messages, delete a chat.
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models import Chat, MessageRole, User
+
+DEFAULT_TITLE = "New chat"
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -71,10 +73,30 @@ def _get_owned_chat(db: Session, chat_id: int, user: User) -> Chat:
 @router.post("", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
 def create_chat(
     body: ChatCreate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Chat:
-    chat = Chat(user_id=current_user.id, title=body.title or "New chat")
+    # At most one untitled, empty chat per user at a time: reuse an
+    # existing one instead of creating a duplicate on top of it. This is
+    # checked against the database (never a client-cached title), so it
+    # can't go stale the way a frontend-side "does any chat in my local
+    # list already say New chat" check could - see the frontend's
+    # createChat(), which no longer does that check itself and just
+    # calls this endpoint every time the button is clicked.
+    if body.title is None:
+        existing_empty = (
+            db.query(Chat)
+            .filter(Chat.user_id == current_user.id, Chat.title == DEFAULT_TITLE)
+            .filter(~Chat.messages.any())
+            .order_by(Chat.created_at.desc())
+            .first()
+        )
+        if existing_empty is not None:
+            response.status_code = status.HTTP_200_OK
+            return existing_empty
+
+    chat = Chat(user_id=current_user.id, title=body.title or DEFAULT_TITLE)
     db.add(chat)
     db.commit()
     db.refresh(chat)

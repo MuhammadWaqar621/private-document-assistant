@@ -131,20 +131,16 @@ export default function AppShellPage() {
   }
 
   async function createChat() {
-    // A chat's title only ever changes once its first message is sent
-    // (see the backend's auto-titling in app/api/messages.py) - so a chat
-    // still titled "New chat" is guaranteed to have zero messages yet.
-    // Reuse that one instead of creating another empty chat on top of it.
-    const existingEmptyChat = chats.find((c) => c.title === "New chat");
-    if (existingEmptyChat) {
-      await selectChat(existingEmptyChat.id);
-      return;
-    }
-
+    // The backend enforces "at most one untitled, empty chat per user" -
+    // POST /api/chats returns an existing empty one instead of creating a
+    // duplicate (checked fresh against the database every time, so it
+    // can never go stale the way comparing against this component's own
+    // cached `chats` list could - always call this, don't try to guess
+    // client-side whether an empty chat already exists).
     setCreating(true);
     try {
       const chat = await api.post<Chat>("/api/chats", {}, true);
-      setChats((prev) => [chat, ...prev]);
+      setChats((prev) => (prev.some((c) => c.id === chat.id) ? prev : [chat, ...prev]));
       await selectChat(chat.id);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
