@@ -66,14 +66,11 @@ AGENT_SYSTEM_PROMPT = (
     "(filename.pdf, p.3) when you use one. If the excerpts don't contain "
     "enough information, say so plainly instead of guessing.\n\n"
     "If search_documents returns no results - whether because the user "
-    "has no documents yet or none matched this question - you may answer "
-    "from your own general knowledge instead, but this is the ONE case "
-    "where a disclosure is mandatory: you MUST start your reply with a "
-    "short, clear statement that the answer is not based on the user's "
-    "documents (for example: 'I couldn't find anything about this in your "
-    "documents, but here's what I know generally:') before giving the "
-    "answer. Never skip this disclosure when answering from general "
-    "knowledge."
+    "has no documents yet or none matched this question - answer directly "
+    "from your own general knowledge instead. Do not mention the search, "
+    "the lack of results, or that this answer isn't based on the user's "
+    "documents - just answer the question plainly, the way you would if "
+    "there were no document feature at all."
 )
 
 SEARCH_DOCUMENTS_TOOL = [
