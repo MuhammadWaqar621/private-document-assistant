@@ -44,6 +44,13 @@ export default function AppShellPage() {
   const [messageInput, setMessageInput] = useState("");
   const [sending, setSending] = useState(false);
   const [streamingReply, setStreamingReply] = useState<string | null>(null);
+  // Real-time "what the agent is doing right now" (e.g. "Thinking...",
+  // "Searching your documents...") - pushed live over the same SSE stream
+  // as the answer tokens (see lib/chatStream.ts's onStatus), not a
+  // client-side simulation. Cleared the moment the first real answer
+  // token arrives, since the status line and the answer bubble occupy
+  // the same slot (see the render below).
+  const [agentStatus, setAgentStatus] = useState<string | null>(null);
   // Unchecked by default: retrieval draws from every document the user has
   // uploaded across all of their chats. Checking this restricts retrieval
   // to just the currently-selected chat's uploads (scope: "chat" in the
@@ -181,6 +188,7 @@ export default function AppShellPage() {
     const chatId = selectedChat.id;
     setSending(true);
     setStreamingReply("");
+    setAgentStatus(null);
     setMessageInput("");
     setError(null);
 
@@ -228,12 +236,20 @@ export default function AppShellPage() {
         // itself fails - not worth surfacing a second error.
       }
       setStreamingReply(null);
+      setAgentStatus(null);
       setSending(false);
     };
 
     await streamChatMessage(chatId, content, chatScopeOnly ? "chat" : "all", {
-      onToken: (text) => setStreamingReply((prev) => (prev ?? "") + text),
-      onError: (message) => setError(message),
+      onToken: (text) => {
+        setAgentStatus(null);
+        setStreamingReply((prev) => (prev ?? "") + text);
+      },
+      onStatus: (message) => setAgentStatus(message),
+      onError: (message) => {
+        setAgentStatus(null);
+        setError(message);
+      },
       onDone: finish,
     });
 
@@ -539,9 +555,16 @@ export default function AppShellPage() {
                       <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
                         QueryNest
                       </span>
-                      <div className="rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
-                        <MarkdownMessage content={`${streamingReply}▍`} />
-                      </div>
+                      {streamingReply === "" && agentStatus ? (
+                        <div className="flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm text-slate-500 shadow-card dark:bg-slate-900 dark:text-slate-400">
+                          <Loader2 size={13} className="animate-spin text-brand-500" />
+                          <span>{agentStatus}</span>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
+                          <MarkdownMessage content={`${streamingReply}▍`} />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

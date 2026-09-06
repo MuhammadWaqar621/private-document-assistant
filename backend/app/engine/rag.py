@@ -18,7 +18,8 @@ app/engine/llm_provider.py) - Groq has no embeddings API.
 
 import json
 import os
-from typing import AsyncGenerator, List, Optional, TypedDict
+from dataclasses import dataclass
+from typing import AsyncGenerator, List, Literal, Optional, TypedDict
 
 from app.engine.azure_client import get_embedding_client, get_embedding_config
 from app.engine.llm_provider import get_active_chat_provider
@@ -172,12 +173,27 @@ def _build_context_block(chunks: List[SearchResult]) -> str:
     return "\n\n---\n\n".join(f"[{chunk.filename}, p.{chunk.page_number}]\n{chunk.text}" for chunk in chunks)
 
 
+@dataclass(frozen=True)
+class AgentEvent:
+    """One item from stream_agentic_reply()'s async generator - either a
+    real answer token (`type="token"`, forwarded to the client and
+    persisted as the assistant Message) or a real-time status update
+    about what the agent is doing right now (`type="status"`, forwarded
+    to the client as its own SSE event but never persisted or counted as
+    part of the answer). Every status event is emitted at the moment the
+    thing it describes actually starts/finishes happening in this
+    function - none of it is simulated or delayed client-side."""
+
+    type: Literal["token", "status"]
+    text: str
+
+
 async def stream_agentic_reply(
     question: str,
     user_id: int,
     chat_id: Optional[int],
     history: Optional[List[HistoryMessage]] = None,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[AgentEvent, None]:
     """The single entrypoint the message-send endpoint calls - see the
     module docstring and AGENT_SYSTEM_PROMPT above.
 
@@ -193,13 +209,18 @@ async def stream_agentic_reply(
     second round-trip. Only if the model actually requests the tool does
     a second call happen (also streamed) for the final answer, after the
     tool has actually run and its real result is appended to the
-    conversation.
+    conversation. `AgentEvent(type="status", ...)` items are interleaved
+    at each real transition (call started, tool call detected, retrieval
+    finished) so the caller can show the user what's actually happening
+    right now instead of a silent gap while the tool runs.
     """
     provider = get_active_chat_provider()  # caller must check azure_ai_configured() first
 
     messages: List[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
     messages.extend(_history_messages(history))
     messages.append({"role": "user", "content": question})
+
+    yield AgentEvent("status", "Thinking...")
 
     stream = await provider.client.chat.completions.create(
         model=provider.model,
@@ -215,13 +236,21 @@ async def stream_agentic_reply(
     # immediately - a response with no tool call streams entirely here,
     # with nothing left to do afterward.
     tool_calls_acc: dict[int, dict] = {}
+    announced_search = False
     async for event in stream:
         if not event.choices:
             continue
         delta = event.choices[0].delta
         if delta and delta.content:
-            yield delta.content
+            yield AgentEvent("token", delta.content)
         if delta and delta.tool_calls:
+            if not announced_search:
+                # Real-time: fired the moment the model's first tool-call
+                # fragment arrives, not after the call is fully assembled -
+                # the earliest point it's actually known a search is
+                # happening at all.
+                yield AgentEvent("status", "Searching your documents...")
+                announced_search = True
             for tc in delta.tool_calls:
                 entry = tool_calls_acc.setdefault(tc.index, {"id": None, "name": None, "arguments": ""})
                 if tc.id:
@@ -236,6 +265,7 @@ async def stream_agentic_reply(
 
     assistant_tool_calls = []
     tool_result_messages = []
+    any_chunks_found = False
     for index in sorted(tool_calls_acc):
         entry = tool_calls_acc[index]
         try:
@@ -248,6 +278,8 @@ async def stream_agentic_reply(
         # scoped to the server-supplied user_id/chat_id - never anything
         # the model provided.
         chunks = retrieve(query, user_id=user_id, chat_id=chat_id)
+        if chunks:
+            any_chunks_found = True
         result_text = _build_context_block(chunks) if chunks else "(no matching document excerpts were found)"
 
         assistant_tool_calls.append(
@@ -260,6 +292,13 @@ async def stream_agentic_reply(
         tool_result_messages.append(
             {"role": "tool", "tool_call_id": entry["id"], "content": result_text}
         )
+
+    yield AgentEvent(
+        "status",
+        "Found relevant excerpts, writing an answer..."
+        if any_chunks_found
+        else "No matching documents found, answering from general knowledge...",
+    )
 
     messages.append({"role": "assistant", "content": None, "tool_calls": assistant_tool_calls})
     messages.extend(tool_result_messages)
@@ -274,4 +313,4 @@ async def stream_agentic_reply(
             continue
         delta = event.choices[0].delta
         if delta and delta.content:
-            yield delta.content
+            yield AgentEvent("token", delta.content)

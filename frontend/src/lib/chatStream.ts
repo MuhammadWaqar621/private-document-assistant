@@ -17,6 +17,11 @@ import { getAccessToken } from "./auth";
 
 export type StreamCallbacks = {
   onToken: (text: string) => void;
+  // Real-time progress updates from the backend's agent (e.g. "Thinking...",
+  // "Searching your documents...") - see app/engine/rag.py's AgentEvent.
+  // Each one is pushed the moment that step actually starts/finishes on
+  // the server, not simulated client-side.
+  onStatus: (message: string) => void;
   onError: (message: string) => void;
   onDone: () => void;
 };
@@ -106,6 +111,8 @@ function handleEvent(rawEvent: string, callbacks: StreamCallbacks): void {
 
   if (eventName === "token" && parsed.content) {
     callbacks.onToken(parsed.content);
+  } else if (eventName === "status" && parsed.message) {
+    callbacks.onStatus(parsed.message);
   } else if (eventName === "error") {
     callbacks.onError(parsed.message ?? "The assistant encountered an error.");
   } else if (eventName === "done") {

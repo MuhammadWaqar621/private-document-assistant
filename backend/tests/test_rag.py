@@ -123,7 +123,17 @@ def _patch_multi_call_provider(monkeypatch, responses: List[List[_FakeEvent]]):
 
 
 async def _collect(agen):
-    return "".join([token async for token in agen])
+    """Joins only the "token" events into the final answer text - mirrors
+    what app/api/messages.py's event_stream() does with full_text, and
+    matches what most of these tests care about (the actual answer, not
+    the status events interleaved with it)."""
+    events = [event async for event in agen]
+    return "".join(e.text for e in events if e.type == "token")
+
+
+async def _collect_statuses(agen):
+    events = [event async for event in agen]
+    return [e.text for e in events if e.type == "status"]
 
 
 @pytest.mark.asyncio
@@ -212,3 +222,89 @@ async def test_agentic_reply_tool_call_with_no_matching_chunks_still_gets_a_fina
         m.get("role") == "tool" and "no matching document excerpts" in m.get("content", "")
         for m in second_call_messages
     )
+
+
+# --- real-time status events -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_direct_answer_emits_a_thinking_status_but_no_search_status(monkeypatch):
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("retrieve() must not be called when the model never requests the tool")
+
+    monkeypatch.setattr(rag_module, "retrieve", _fail_if_called)
+    _patch_multi_call_provider(monkeypatch, [_content_events(["Hello", "!"])])
+
+    statuses = await _collect_statuses(
+        rag_module.stream_agentic_reply("hi", user_id=1, chat_id=None, history=None)
+    )
+
+    assert statuses == ["Thinking..."]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_path_emits_searching_then_found_status_in_order(monkeypatch):
+    monkeypatch.setattr(
+        rag_module,
+        "retrieve",
+        lambda *a, **k: [SearchResult(text="x", page_number=1, filename="a.pdf", document_id=1, score=0.9)],
+    )
+    _patch_multi_call_provider(
+        monkeypatch,
+        [
+            _tool_call_events("search_documents", ['{"query": "refund policy"}']),
+            _content_events(["30 days"]),
+        ],
+    )
+
+    statuses = await _collect_statuses(
+        rag_module.stream_agentic_reply("What's the refund policy?", user_id=1, chat_id=None, history=None)
+    )
+
+    assert statuses == ["Thinking...", "Searching your documents...", "Found relevant excerpts, writing an answer..."]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_with_no_matches_emits_the_no_documents_found_status(monkeypatch):
+    monkeypatch.setattr(rag_module, "retrieve", lambda *a, **k: [])
+    _patch_multi_call_provider(
+        monkeypatch,
+        [
+            _tool_call_events("search_documents", ['{"query": "capital of France"}']),
+            _content_events(["Paris"]),
+        ],
+    )
+
+    statuses = await _collect_statuses(
+        rag_module.stream_agentic_reply("What is the capital of France?", user_id=1, chat_id=None, history=None)
+    )
+
+    assert statuses == [
+        "Thinking...",
+        "Searching your documents...",
+        "No matching documents found, answering from general knowledge...",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_status_events_are_never_included_in_the_collected_answer_text(monkeypatch):
+    monkeypatch.setattr(
+        rag_module,
+        "retrieve",
+        lambda *a, **k: [SearchResult(text="x", page_number=1, filename="a.pdf", document_id=1, score=0.9)],
+    )
+    _patch_multi_call_provider(
+        monkeypatch,
+        [
+            _tool_call_events("search_documents", ['{"query": "q"}']),
+            _content_events(["final", " answer"]),
+        ],
+    )
+
+    result = await _collect(
+        rag_module.stream_agentic_reply("q", user_id=1, chat_id=None, history=None)
+    )
+
+    assert result == "final answer"
+    assert "Thinking" not in result
+    assert "Searching" not in result

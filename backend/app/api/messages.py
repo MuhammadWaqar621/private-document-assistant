@@ -144,11 +144,19 @@ async def send_message(
     async def event_stream() -> AsyncGenerator[str, None]:
         full_text = ""
         try:
-            async for token in stream_agentic_reply(
+            async for agent_event in stream_agentic_reply(
                 body.content, user_id=user_id, chat_id=scope_chat_id, history=history
             ):
-                full_text += token
-                yield _sse("token", {"content": token})
+                # "status" events are real-time progress updates (see
+                # AgentEvent's docstring) - forwarded to the client as
+                # their own SSE event, never persisted and never counted
+                # as part of the answer. Only "token" events are the
+                # actual answer.
+                if agent_event.type == "status":
+                    yield _sse("status", {"message": agent_event.text})
+                else:
+                    full_text += agent_event.text
+                    yield _sse("token", {"content": agent_event.text})
         except Exception as exc:  # noqa: BLE001 - surface the failure over SSE, don't just hang up
             yield _sse("error", {"message": str(exc)})
 
