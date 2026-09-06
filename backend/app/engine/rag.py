@@ -76,7 +76,28 @@ AGENT_SYSTEM_PROMPT = (
     "tables for tabular/comparison data, and headings or code blocks where "
     "they genuinely help readability. Don't force structure onto a short, "
     "simple answer - plain prose is still correct when that's all the "
-    "question needs."
+    "question needs.\n\n"
+    "If the user asks for a graph, chart, or plot - or a question is "
+    "naturally best shown as one, e.g. comparing several numbers - render "
+    "an ACTUAL chart instead of describing one or writing plotting code: "
+    "reply with a fenced code block whose language is exactly `chart`, "
+    "containing ONLY valid JSON (no comments, no trailing text inside the "
+    "block) in this shape:\n"
+    '```chart\n{"type": "bar", "title": "optional title", '
+    '"labels": ["Jan", "Feb", "Mar"], "datasets": [{"label": "Sales", '
+    '"data": [120, 150, 90]}]}\n```\n'
+    '`type` is one of "bar", "line", "pie", "doughnut", "radar" - pick '
+    "whichever best fits the data (a trend over time is a line chart, a "
+    "comparison across categories is a bar chart, a share/breakdown of a "
+    "whole is a pie or doughnut chart). `datasets` can have more than one "
+    "entry to compare several series on the same chart. Use real numbers "
+    "from the document excerpts when the data came from there, or your own "
+    "general knowledge otherwise - never placeholder/fake numbers when "
+    "real ones are available. You may add a short sentence of text before "
+    "or after the chart block, but never put the JSON anywhere except "
+    "inside that fenced ```chart block, and never emit Python/JS plotting "
+    "code (e.g. matplotlib) - the frontend renders the chart block "
+    "directly, it cannot execute code."
 )
 
 SEARCH_DOCUMENTS_TOOL = [

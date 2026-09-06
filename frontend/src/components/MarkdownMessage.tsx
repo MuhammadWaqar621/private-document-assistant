@@ -1,9 +1,28 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import ChartBlock from "./ChartBlock";
+
 type Props = {
   content: string;
 };
+
+function childClassName(children: unknown): string {
+  const child = Array.isArray(children) ? children[0] : children;
+  if (child && typeof child === "object" && "props" in child) {
+    return (child as { props?: { className?: string } }).props?.className ?? "";
+  }
+  return "";
+}
+
+function textContent(children: unknown): string {
+  if (typeof children === "string") return children;
+  if (Array.isArray(children)) return children.map(textContent).join("");
+  if (children && typeof children === "object" && "props" in children) {
+    return textContent((children as { props?: { children?: unknown } }).props?.children);
+  }
+  return "";
+}
 
 /**
  * Renders an assistant reply's Markdown (bold, lists, tables, code, links -
@@ -40,6 +59,9 @@ export default function MarkdownMessage({ content }: Props) {
             </a>
           ),
           code: ({ children, className }) => {
+            if (/language-chart/.test(className ?? "")) {
+              return <ChartBlock raw={textContent(children)} />;
+            }
             const isBlock = /language-/.test(className ?? "");
             return isBlock ? (
               <code className={className}>{children}</code>
@@ -49,11 +71,19 @@ export default function MarkdownMessage({ content }: Props) {
               </code>
             );
           },
-          pre: ({ children }) => (
-            <pre className="mb-2 overflow-x-auto rounded-lg bg-slate-100 p-3 text-xs last:mb-0 dark:bg-slate-800">
-              {children}
-            </pre>
-          ),
+          pre: ({ children }) => {
+            // A ```chart block's <code> renders its own bordered container
+            // (see ChartBlock) - don't additionally wrap it in <pre>'s
+            // monospace/code-block styling.
+            if (/language-chart/.test(childClassName(children))) {
+              return <>{children}</>;
+            }
+            return (
+              <pre className="mb-2 overflow-x-auto rounded-lg bg-slate-100 p-3 text-xs last:mb-0 dark:bg-slate-800">
+                {children}
+              </pre>
+            );
+          },
           blockquote: ({ children }) => (
             <blockquote className="mb-2 border-l-2 border-slate-300 pl-3 text-slate-600 last:mb-0 dark:border-slate-600 dark:text-slate-400">
               {children}
