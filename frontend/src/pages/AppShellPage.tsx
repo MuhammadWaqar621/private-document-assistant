@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Lock, Loader2, MessageSquarePlus, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
 
 import DocumentUpload from "../components/DocumentUpload";
+import MarkdownMessage from "../components/MarkdownMessage";
 import ThemeToggle from "../components/ThemeToggle";
 import { ApiError, api } from "../lib/api";
 import { initialsFor } from "../lib/avatar";
@@ -485,13 +486,13 @@ export default function AppShellPage() {
                         )}
                         <div className="flex items-end gap-1.5">
                           <div
-                            className={`whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
+                            className={`rounded-lg px-4 py-2 text-sm ${
                               isUser
-                                ? "bg-brand-600 text-white"
+                                ? "whitespace-pre-wrap bg-brand-600 text-white"
                                 : "bg-white text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100"
                             }`}
                           >
-                            {message.content}
+                            {isUser ? message.content : <MarkdownMessage content={message.content} />}
                           </div>
                           {!isUser && speechConfigured && (
                             <button
@@ -531,9 +532,8 @@ export default function AppShellPage() {
                       <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
                         QueryNest
                       </span>
-                      <div className="whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
-                        {streamingReply}
-                        <span className="ml-0.5 animate-pulse text-brand-500">▍</span>
+                      <div className="rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
+                        <MarkdownMessage content={`${streamingReply}▍`} />
                       </div>
                     </div>
                   </div>

@@ -70,7 +70,13 @@ AGENT_SYSTEM_PROMPT = (
     "from your own general knowledge instead. Do not mention the search, "
     "the lack of results, or that this answer isn't based on the user's "
     "documents - just answer the question plainly, the way you would if "
-    "there were no document feature at all."
+    "there were no document feature at all.\n\n"
+    "Format every reply in Markdown, the way you normally would: use "
+    "**bold** for emphasis, bullet or numbered lists for multiple items, "
+    "tables for tabular/comparison data, and headings or code blocks where "
+    "they genuinely help readability. Don't force structure onto a short, "
+    "simple answer - plain prose is still correct when that's all the "
+    "question needs."
 )
 
 SEARCH_DOCUMENTS_TOOL = [
