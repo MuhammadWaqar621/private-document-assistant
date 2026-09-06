@@ -14,6 +14,7 @@ export type ConfigStatus = {
 export type CurrentUser = {
   id: number;
   email: string;
+  full_name: string | null;
 };
 
 export type Chat = {

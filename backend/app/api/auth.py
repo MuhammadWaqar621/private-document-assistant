@@ -41,7 +41,16 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class SignupRequest(BaseModel):
     email: EmailStr
+    full_name: str
     password: str
+
+    @field_validator("full_name")
+    @classmethod
+    def _check_full_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Full name is required")
+        return stripped
 
     @field_validator("password")
     @classmethod
@@ -98,6 +107,7 @@ class MessageResponse(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: str
+    full_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -133,7 +143,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    user = User(email=body.email, hashed_password=hash_password(body.password))
+    user = User(email=body.email, full_name=body.full_name, hashed_password=hash_password(body.password))
     db.add(user)
     db.commit()
     db.refresh(user)

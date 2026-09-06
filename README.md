@@ -231,6 +231,29 @@ how the two modes map to the `scope` field on
    each assistant reply plays it back (`/api/speech/synthesize`) - see
    "Speech" below.
 
+### Chat UI message attribution
+
+Each message in the chat transcript carries a small circular avatar next
+to it - the same pattern ChatGPT/Claude use - instead of a raw
+name/email printed above the bubble:
+
+- **User messages:** the avatar shows initials derived from the account's
+  `full_name` (`frontend/src/lib/avatar.ts`'s `initialsFor()` - first
+  letter of the first and last word, e.g. "Muhammad Waqar" → "MW";
+  falls back to the email's first letter for an account with no name at
+  all, since `full_name` is nullable at the DB level for accounts that
+  predate the column).
+- **Assistant messages:** a QueryNest-branded avatar (the same lock
+  icon/brand color used elsewhere in the app) paired with a "QueryNest"
+  label, so it's unambiguous which replies came from the model.
+
+The composer itself (attach/mic/text input/send) is a single rounded
+input bar, not stacked separate controls - the attach (paperclip) and
+mic icons sit inline to the left of the text input, matching the
+ChatGPT/Claude composer pattern rather than a toolbar above the input.
+Uploaded-document chips render as their own row above this bar so they
+never crowd the input controls themselves.
+
 ## Document types supported
 
 | Type | How it's read | Notes |
@@ -656,7 +679,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest \
 
 | Endpoint | Notes |
 |---|---|
-| `POST /api/auth/signup` | email + password → creates a `User`, returns `{access_token, refresh_token}` |
+| `POST /api/auth/signup` | `{email, full_name, password}` → creates a `User`, returns `{access_token, refresh_token}`. `full_name` is required (non-blank) - it's what the chat UI's avatar initials are derived from (see "Chat UI message attribution" below). |
 | `POST /api/auth/login` | verifies password, returns tokens |
 | `POST /api/auth/refresh` | exchanges a refresh token for a new access token |
 | `GET /api/auth/me` | current user (requires `Authorization: Bearer <access_token>`) |
@@ -699,7 +722,7 @@ specific chat - see "Speech" above.
 # 1. sign up
 curl -X POST http://localhost:8000/api/auth/signup \
   -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"a-long-password"}'
+  -d '{"email":"you@example.com","full_name":"Your Name","password":"a-long-password"}'
 # -> {"access_token": "...", "refresh_token": "...", "token_type": "bearer"}
 
 # 2. log in (same credentials)
@@ -778,7 +801,7 @@ cross into another user's data.
 
 ## Running tests
 
-`backend/tests/` holds the automated suite (96 tests) that replaced the
+`backend/tests/` holds the automated suite (97 tests) that replaced the
 purely-manual verification this project relied on through Phase 3:
 
 | File | Covers |
@@ -832,7 +855,7 @@ QDRANT_TEST_URL=http://localhost:6333 pytest tests/ -v
 Expected output ends with something like:
 
 ```
-======================== 96 passed, 7 warnings in ~20s ========================
+======================== 97 passed, 7 warnings in ~20s ========================
 ```
 
 (The warnings are pytest-asyncio/passlib deprecation notices unrelated to

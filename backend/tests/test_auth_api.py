@@ -17,7 +17,8 @@ from .conftest import VALID_TEST_PASSWORD, auth_headers, signup, unique_email
 def test_signup_creates_a_user_and_returns_tokens(client):
     email = unique_email()
     response = client.post(
-        "/api/auth/signup", json={"email": email, "password": VALID_TEST_PASSWORD}
+        "/api/auth/signup",
+        json={"email": email, "full_name": "Test User", "password": VALID_TEST_PASSWORD},
     )
 
     assert response.status_code == 201
@@ -30,7 +31,7 @@ def test_signup_creates_a_user_and_returns_tokens(client):
 def test_signup_rejects_a_password_missing_an_uppercase_letter(client):
     response = client.post(
         "/api/auth/signup",
-        json={"email": unique_email(), "password": "lowercase-only-123!"},
+        json={"email": unique_email(), "full_name": "Test User", "password": "lowercase-only-123!"},
     )
     assert response.status_code == 422
     assert "uppercase letter" in response.text
@@ -39,7 +40,7 @@ def test_signup_rejects_a_password_missing_an_uppercase_letter(client):
 def test_signup_rejects_a_password_missing_a_special_character(client):
     response = client.post(
         "/api/auth/signup",
-        json={"email": unique_email(), "password": "NoSpecialChar123"},
+        json={"email": unique_email(), "full_name": "Test User", "password": "NoSpecialChar123"},
     )
     assert response.status_code == 422
     assert "special character" in response.text
@@ -47,21 +48,32 @@ def test_signup_rejects_a_password_missing_a_special_character(client):
 
 def test_signup_rejects_a_too_short_password(client):
     response = client.post(
-        "/api/auth/signup", json={"email": unique_email(), "password": "Ab1!"}
+        "/api/auth/signup",
+        json={"email": unique_email(), "full_name": "Test User", "password": "Ab1!"},
     )
     assert response.status_code == 422
     assert "8 characters" in response.text
 
 
+def test_signup_rejects_a_blank_full_name(client):
+    response = client.post(
+        "/api/auth/signup",
+        json={"email": unique_email(), "full_name": "   ", "password": VALID_TEST_PASSWORD},
+    )
+    assert response.status_code == 422
+
+
 def test_signup_duplicate_email_is_rejected(client):
     email = unique_email()
     first = client.post(
-        "/api/auth/signup", json={"email": email, "password": VALID_TEST_PASSWORD}
+        "/api/auth/signup",
+        json={"email": email, "full_name": "Test User", "password": VALID_TEST_PASSWORD},
     )
     assert first.status_code == 201
 
     second = client.post(
-        "/api/auth/signup", json={"email": email, "password": "A-different-Password-456!"}
+        "/api/auth/signup",
+        json={"email": email, "full_name": "Test User", "password": "A-different-Password-456!"},
     )
 
     assert second.status_code == 400
@@ -69,11 +81,12 @@ def test_signup_duplicate_email_is_rejected(client):
 
 
 def test_me_requires_a_valid_token(client):
-    signed_up = signup(client)
+    signed_up = signup(client, full_name="Ada Lovelace")
 
     authed = client.get("/api/auth/me", headers=auth_headers(signed_up))
     assert authed.status_code == 200
     assert authed.json()["email"] == signed_up["email"]
+    assert authed.json()["full_name"] == "Ada Lovelace"
 
     unauthed = client.get("/api/auth/me")
     assert unauthed.status_code == 401
@@ -149,7 +162,7 @@ def test_signup_returns_503_when_jwt_not_configured(client, monkeypatch):
 
     response = client.post(
         "/api/auth/signup",
-        json={"email": unique_email(), "password": VALID_TEST_PASSWORD},
+        json={"email": unique_email(), "full_name": "Test User", "password": VALID_TEST_PASSWORD},
     )
 
     assert response.status_code == 503

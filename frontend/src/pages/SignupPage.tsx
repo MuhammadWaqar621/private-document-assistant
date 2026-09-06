@@ -20,6 +20,7 @@ const labelClass = "mb-1 block text-sm font-medium text-slate-700 dark:text-slat
 export default function SignupPage() {
   const navigate = useNavigate();
 
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -42,7 +43,11 @@ export default function SignupPage() {
 
     setSubmitting(true);
     try {
-      const tokens = await api.post<TokenResponse>("/api/auth/signup", { email, password });
+      const tokens = await api.post<TokenResponse>("/api/auth/signup", {
+        email,
+        full_name: fullName,
+        password,
+      });
       setTokens(tokens.access_token, tokens.refresh_token);
       navigate("/app");
     } catch (err) {
@@ -59,6 +64,21 @@ export default function SignupPage() {
   return (
     <AuthLayout title="Create your account" subtitle="Start chatting with your documents.">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        <div>
+          <label htmlFor="fullName" className={labelClass}>
+            Full name
+          </label>
+          <input
+            id="fullName"
+            type="text"
+            required
+            autoComplete="name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            className={inputClass}
+          />
+        </div>
+
         <div>
           <label htmlFor="email" className={labelClass}>
             Email

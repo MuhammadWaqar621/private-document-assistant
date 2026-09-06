@@ -133,10 +133,17 @@ def unique_email(prefix: str = "user") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}@example.com"
 
 
-def signup(client: TestClient, email: str | None = None, password: str = VALID_TEST_PASSWORD) -> dict:
+def signup(
+    client: TestClient,
+    email: str | None = None,
+    password: str = VALID_TEST_PASSWORD,
+    full_name: str = "Test User",
+) -> dict:
     """Sign up a fresh user and return the token response body."""
     email = email or unique_email()
-    response = client.post("/api/auth/signup", json={"email": email, "password": password})
+    response = client.post(
+        "/api/auth/signup", json={"email": email, "full_name": full_name, "password": password}
+    )
     assert response.status_code == 201, response.text
     body = response.json()
     body["email"] = email

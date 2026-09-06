@@ -6,10 +6,17 @@ import { Lock, Loader2, MessageSquarePlus, Mic, Send, Square, Trash2, Volume2 } 
 import DocumentUpload from "../components/DocumentUpload";
 import ThemeToggle from "../components/ThemeToggle";
 import { ApiError, api } from "../lib/api";
+import { initialsFor } from "../lib/avatar";
 import { clearTokens } from "../lib/auth";
 import { streamChatMessage } from "../lib/chatStream";
 import { useConfigStatus } from "../lib/useConfigStatus";
 import type { Chat, ChatDetail, ChatMessage, CurrentUser, DocumentOut } from "../lib/types";
+
+const documentStatusStyles: Record<DocumentOut["status"], string> = {
+  processing: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+  ready: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  failed: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300",
+};
 
 /**
  * Main chat shell: chat list + history (Phase 2) plus, as of this phase,
@@ -440,66 +447,94 @@ export default function AppShellPage() {
                   ask a question about it.
                 </p>
               )}
-              <div className="flex flex-col gap-4">
-                {selectedChat.messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex max-w-2xl flex-col ${
-                      message.role === "user" ? "ml-auto items-end" : "items-start"
-                    }`}
-                  >
-                    <span className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
-                      {message.role === "assistant" && (
-                        <span className="flex h-4 w-4 items-center justify-center rounded bg-brand-600 text-white">
-                          <Lock size={9} strokeWidth={3} />
-                        </span>
-                      )}
-                      {message.role === "user" ? (user?.email ?? "You") : "QueryNest"}
-                    </span>
-                    <div className="flex w-full items-end gap-1.5">
+              <div className="flex flex-col">
+                {selectedChat.messages.map((message, index) => {
+                  const isUser = message.role === "user";
+                  // A user message always starts a new Q&A turn (more space
+                  // above, separating it from the previous turn's reply);
+                  // the assistant reply right after it stays visually
+                  // attached to its own question instead of floating with
+                  // the same gap as an unrelated turn.
+                  const topSpacing = index === 0 ? "" : isUser ? "mt-5" : "mt-1.5";
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex max-w-2xl items-end gap-2 ${topSpacing} ${
+                        isUser ? "ml-auto flex-row-reverse" : ""
+                      }`}
+                    >
                       <div
-                        className={`whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
-                          message.role === "user"
-                            ? "ml-auto bg-brand-600 text-white"
-                            : "bg-white text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100"
+                        title={isUser ? user?.full_name ?? user?.email ?? "You" : "QueryNest"}
+                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                          isUser
+                            ? "bg-slate-700 text-white dark:bg-slate-600"
+                            : "bg-brand-600 text-white"
                         }`}
                       >
-                        {message.content}
+                        {isUser ? (
+                          initialsFor(user?.full_name, user?.email ?? "?")
+                        ) : (
+                          <Lock size={14} strokeWidth={2.5} />
+                        )}
                       </div>
-                      {message.role === "assistant" && speechConfigured && (
-                        <button
-                          type="button"
-                          onClick={() => playMessageAudio(message)}
-                          title={playingId === message.id ? "Stop" : "Read this reply aloud"}
-                          className={`mb-1 shrink-0 rounded-full p-1.5 transition ${
-                            playingId === message.id
-                              ? "bg-brand-100 text-brand-700 dark:bg-brand-900 dark:text-brand-300"
-                              : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-300"
-                          }`}
-                        >
-                          {synthesizingId === message.id ? (
-                            <Loader2 size={13} className="animate-spin" />
-                          ) : playingId === message.id ? (
-                            <Square size={13} />
-                          ) : (
-                            <Volume2 size={13} />
+                      <div className="flex min-w-0 flex-col gap-1">
+                        {!isUser && (
+                          <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
+                            QueryNest
+                          </span>
+                        )}
+                        <div className="flex items-end gap-1.5">
+                          <div
+                            className={`whitespace-pre-wrap rounded-lg px-4 py-2 text-sm ${
+                              isUser
+                                ? "bg-brand-600 text-white"
+                                : "bg-white text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100"
+                            }`}
+                          >
+                            {message.content}
+                          </div>
+                          {!isUser && speechConfigured && (
+                            <button
+                              type="button"
+                              onClick={() => playMessageAudio(message)}
+                              title={playingId === message.id ? "Stop" : "Read this reply aloud"}
+                              className={`mb-1 shrink-0 rounded-full p-1.5 transition ${
+                                playingId === message.id
+                                  ? "bg-brand-100 text-brand-700 dark:bg-brand-900 dark:text-brand-300"
+                                  : "text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                              }`}
+                            >
+                              {synthesizingId === message.id ? (
+                                <Loader2 size={13} className="animate-spin" />
+                              ) : playingId === message.id ? (
+                                <Square size={13} />
+                              ) : (
+                                <Volume2 size={13} />
+                              )}
+                            </button>
                           )}
-                        </button>
-                      )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {streamingReply !== null && (
-                  <div className="flex max-w-2xl flex-col items-start">
-                    <span className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
-                      <span className="flex h-4 w-4 items-center justify-center rounded bg-brand-600 text-white">
-                        <Lock size={9} strokeWidth={3} />
+                  <div
+                    className={`flex max-w-2xl items-end gap-2 ${
+                      selectedChat.messages.length === 0 ? "" : "mt-1.5"
+                    }`}
+                  >
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white">
+                      <Lock size={14} strokeWidth={2.5} />
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
+                        QueryNest
                       </span>
-                      QueryNest
-                    </span>
-                    <div className="whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
-                      {streamingReply}
-                      <span className="ml-0.5 animate-pulse text-brand-500">▍</span>
+                      <div className="whitespace-pre-wrap rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow-card dark:bg-slate-900 dark:text-slate-100">
+                        {streamingReply}
+                        <span className="ml-0.5 animate-pulse text-brand-500">▍</span>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -509,17 +544,28 @@ export default function AppShellPage() {
 
             <form
               onSubmit={handleSendMessage}
-              className="border-t border-slate-200 p-4 dark:border-slate-800"
+              className="border-t border-slate-200 px-4 pb-8 pt-3 dark:border-slate-800"
             >
-              <div className="mb-2">
-                <DocumentUpload
-                  chatId={selectedChat.id}
-                  documents={documents}
-                  onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
-                  onAuthFailure={handleAuthFailure}
-                  disabled={!ragConfigured}
-                />
-              </div>
+              {documents.length > 0 && (
+                <ul className="mb-2 flex flex-wrap gap-1.5">
+                  {documents.map((doc) => (
+                    <li
+                      key={doc.id}
+                      title={doc.error_message ?? undefined}
+                      className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900"
+                    >
+                      <span className="max-w-[10rem] truncate text-slate-700 dark:text-slate-300">
+                        {doc.filename}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${documentStatusStyles[doc.status]}`}
+                      >
+                        {doc.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               <label className="mb-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                 <input
@@ -534,18 +580,13 @@ export default function AppShellPage() {
                   (unchecked: searches every document you've uploaded across all your chats)
                 </span>
               </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={messageInput}
-                  onChange={(e) => setMessageInput(e.target.value)}
-                  disabled={chatInputDisabled}
-                  placeholder={
-                    ragConfigured
-                      ? "Ask a question about your uploaded documents..."
-                      : "Configuration missing - set AI credentials in .env"
-                  }
-                  className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
+
+              <div className="flex items-center gap-0.5 rounded-2xl border border-slate-300 bg-white px-2 py-1.5 shadow-sm transition focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500 dark:border-slate-700 dark:bg-slate-900">
+                <DocumentUpload
+                  chatId={selectedChat.id}
+                  onUploaded={(doc) => setDocuments((prev) => [doc, ...prev])}
+                  onAuthFailure={handleAuthFailure}
+                  disabled={!ragConfigured}
                 />
                 {speechConfigured && (
                   <button
@@ -553,10 +594,10 @@ export default function AppShellPage() {
                     onClick={toggleRecording}
                     disabled={chatInputDisabled || transcribing}
                     title={recording ? "Stop recording" : "Record a voice message"}
-                    className={`flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-medium shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${
                       recording
-                        ? "border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900"
-                        : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                        ? "bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900"
+                        : "text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
                     }`}
                   >
                     {transcribing ? (
@@ -568,13 +609,25 @@ export default function AppShellPage() {
                     )}
                   </button>
                 )}
+                <input
+                  type="text"
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  disabled={chatInputDisabled}
+                  placeholder={
+                    ragConfigured
+                      ? "Ask a question about your uploaded documents..."
+                      : "Configuration missing - set AI credentials in .env"
+                  }
+                  className="min-w-0 flex-1 border-0 bg-transparent px-2 py-1.5 text-sm text-slate-900 outline-none disabled:cursor-not-allowed disabled:text-slate-400 dark:text-white dark:disabled:text-slate-500"
+                />
                 <button
                   type="submit"
                   disabled={chatInputDisabled || !messageInput.trim()}
-                  className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800 dark:disabled:text-slate-600"
+                  title="Send"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800 dark:disabled:text-slate-600"
                 >
-                  <Send size={15} />
-                  {sending ? "Sending..." : "Send"}
+                  {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                 </button>
               </div>
             </form>

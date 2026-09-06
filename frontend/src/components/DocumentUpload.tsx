@@ -1,38 +1,26 @@
 import { useCallback, useRef, useState } from "react";
-import { Paperclip, X } from "lucide-react";
+import { Paperclip } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
 import type { DocumentOut } from "../lib/types";
 
 type Props = {
   chatId: number;
-  documents: DocumentOut[];
   onUploaded: (doc: DocumentOut) => void;
   onAuthFailure: () => void;
   disabled?: boolean;
 };
 
-const statusStyles: Record<DocumentOut["status"], string> = {
-  processing: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  ready: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  failed: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300",
-};
-
 /**
- * Compact upload control meant to live inline in the chat input bar (an
- * attach icon, not a standalone drop-zone) - clicking it opens a file
- * picker for POST /api/chats/{chatId}/documents. Ingestion runs
- * synchronously on the backend, so the response already carries the final
- * status (ready/failed); uploaded files render as small chips above the
- * input rather than a separate panel elsewhere on the page.
+ * Icon-only attach control meant to sit inline in the chat composer's
+ * single input bar, alongside the mic and send buttons (see
+ * AppShellPage.tsx) - clicking it opens a file picker for
+ * POST /api/chats/{chatId}/documents. Ingestion runs synchronously on the
+ * backend, so the response already carries the final status
+ * (ready/failed); the uploaded-file chips themselves are rendered by the
+ * parent from its own `documents` state, not by this component.
  */
-export default function DocumentUpload({
-  chatId,
-  documents,
-  onUploaded,
-  onAuthFailure,
-  disabled,
-}: Props) {
+export default function DocumentUpload({ chatId, onUploaded, onAuthFailure, disabled }: Props) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -63,43 +51,15 @@ export default function DocumentUpload({
   );
 
   return (
-    <div className="flex flex-col gap-2">
-      {documents.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5">
-          {documents.map((doc) => (
-            <li
-              key={doc.id}
-              title={doc.error_message ?? undefined}
-              className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900"
-            >
-              <span className="max-w-[10rem] truncate text-slate-700 dark:text-slate-300">
-                {doc.filename}
-              </span>
-              <span
-                className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${statusStyles[doc.status]}`}
-              >
-                {doc.status}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {error && (
-        <p className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
-          <X size={12} /> {error}
-        </p>
-      )}
-
+    <div className="relative flex shrink-0 items-center">
       <button
         type="button"
         onClick={() => !disabled && !uploading && inputRef.current?.click()}
         disabled={disabled || uploading}
         title="Attach a .pdf/.docx/.txt/.jpg/.png document to this chat"
-        className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+        className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
       >
-        <Paperclip size={13} />
-        {uploading ? "Uploading..." : "Attach document"}
+        <Paperclip size={17} />
       </button>
       <input
         ref={inputRef}
@@ -113,6 +73,11 @@ export default function DocumentUpload({
           e.target.value = "";
         }}
       />
+      {error && (
+        <p className="absolute bottom-full left-0 mb-1 w-max max-w-[16rem] rounded-md bg-red-600 px-2 py-1 text-xs text-white shadow-lg">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

@@ -17,6 +17,12 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False, index=True)
+    # Nullable at the DB level (existing accounts predate this column, and
+    # nothing here should refuse to load one that has none) even though
+    # app/api/auth.py's SignupRequest requires it for every new signup -
+    # frontend/src/lib/avatar.ts falls back to the email's first letter for
+    # a user with no full_name.
+    full_name = Column(String, nullable=True)
     hashed_password = Column(String, nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
