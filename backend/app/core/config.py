@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     )
 
     # --- App metadata -----------------------------------------------------
-    APP_NAME: str = "QueryNest"
+    APP_NAME: str = "Private Document Assistant"
     ENVIRONMENT: str = "development"
 
     # --- Database -----------------------------------------------------

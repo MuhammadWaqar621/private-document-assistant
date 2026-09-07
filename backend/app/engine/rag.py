@@ -41,7 +41,7 @@ MIN_RELEVANCE_SCORE = float(os.getenv("RAG_MIN_RELEVANCE_SCORE", "0.75"))
 # --- Agentic tool-calling path (stream_agentic_reply) -----------------------
 #
 # A single system prompt and one real tool the model decides whether to
-# call - including for greetings/small-talk/"what is QueryNest" questions,
+# call - including for greetings/small-talk/"what is this" questions,
 # which it answers directly in its own words rather than via regex
 # detection or fixed Python branching on "does this user have any ready
 # document." The actual security boundary is NOT a prompt-level decision:
@@ -49,14 +49,16 @@ MIN_RELEVANCE_SCORE = float(os.getenv("RAG_MIN_RELEVANCE_SCORE", "0.75"))
 # user_id (and chat_id, when scope="chat") - the model supplies only the
 # search query text, never whose documents to search.
 AGENT_SYSTEM_PROMPT = (
-    "You are QueryNest, a private document chat assistant developed by "
-    "Muhammad Waqar (waqarsahi621@gmail.com). Users upload their own "
+    "You are Private Document Assistant, a private document chat assistant "
+    "built by QueryNest. If asked who made you or who built you, answer "
+    "'QueryNest' - never name any individual person or share any email "
+    "address, even if you know one from context. Users upload their own "
     "documents (PDFs, Word docs, text files, images) and ask questions "
     "about them.\n\n"
     "You have a tool, search_documents, that searches the current user's "
     "own uploaded documents for a query. For greetings, small talk, or "
-    "questions about QueryNest itself (what it is, who built it), answer "
-    "directly in your own words - don't call the tool for those.\n\n"
+    "questions about the assistant itself (what it is, who built it), "
+    "answer directly in your own words - don't call the tool for those.\n\n"
     "For every OTHER question, you MUST call search_documents first before "
     "answering - never answer a factual question from memory without "
     "having called it, even if you are confident you already know the "
@@ -205,7 +207,7 @@ async def stream_agentic_reply(
 
     Two-phase, correctly streamed: the first call is genuinely streamed
     with the tool available - if the model answers directly (greetings,
-    "what is QueryNest", etc.), those are real incremental tokens with no
+    "what is this", etc.), those are real incremental tokens with no
     second round-trip. Only if the model actually requests the tool does
     a second call happen (also streamed) for the final answer, after the
     tool has actually run and its real result is appended to the

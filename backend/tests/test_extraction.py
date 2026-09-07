@@ -51,7 +51,7 @@ def test_extract_txt_is_treated_as_a_single_page():
     assert len(pages) == 1
     page_number, text = pages[0]
     assert page_number == 1
-    assert "QueryNest Test Document (TXT)" in text
+    assert "Private Document Assistant Test Document (TXT)" in text
     assert "no notion of pages" in text
 
 

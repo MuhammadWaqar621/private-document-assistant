@@ -1,11 +1,12 @@
-# QueryNest
+# Private Document Assistant
 
 Your own private AI assistant for your own documents. Upload files that are
 yours alone, and get answers grounded strictly in their content — never in
 public training data. General-purpose tools like ChatGPT or Claude have
-never seen this content and can't answer questions about it; QueryNest
-exists specifically to let you interrogate your own private, secure
-documents without ever sending them to a third-party AI product.
+never seen this content and can't answer questions about it; Private
+Document Assistant exists specifically to let you interrogate your own
+private, secure documents without ever sending them to a third-party AI
+product.
 
 Built as a portfolio project to demonstrate a production-shaped
 retrieval-augmented-generation stack end to end: chunking and embedding
@@ -166,7 +167,7 @@ how the two modes map to the `scope` field on
      string - nothing else. It is streamed a first completion with
      `tools=[SEARCH_DOCUMENTS_TOOL]` and `tool_choice="auto"`, under
      `AGENT_SYSTEM_PROMPT`.
-   - **For greetings, small talk, or questions about QueryNest itself**
+   - **For greetings, small talk, or questions about the assistant itself**
      ("what is this", "who built it"), the model answers directly in that
      first streamed call - no tool call, no Qdrant query, no second
      completion. This is what makes "hi" from a user who has documents
@@ -243,9 +244,10 @@ name/email printed above the bubble:
   falls back to the email's first letter for an account with no name at
   all, since `full_name` is nullable at the DB level for accounts that
   predate the column).
-- **Assistant messages:** a QueryNest-branded avatar (the same lock
-  icon/brand color used elsewhere in the app) paired with a "QueryNest"
-  label, so it's unambiguous which replies came from the model.
+- **Assistant messages:** a Private Document Assistant-branded avatar (the
+  same lock icon/brand color used elsewhere in the app) paired with a
+  "Private Document Assistant" label, so it's unambiguous which replies
+  came from the model.
 
 The composer itself (attach/mic/text input/send) is a single rounded
 input bar, not stacked separate controls - the attach (paperclip) and
@@ -948,7 +950,7 @@ confirm this on your own machine.
   tool-calling design - `stream_agentic_reply()` gives the model one real
   tool (`search_documents`) and lets it decide, per message, whether the
   question needs retrieval at all, including greeting/small-talk/
-  "what is QueryNest" questions that are now answered directly rather than
+  "what is this" questions that are now answered directly rather than
   via any hardcoded detection. This fixed a real bug found through live
   testing: a user with documents sitting in some other chat saying "hi"
   previously got an awkward grounded-refusal instead of a natural

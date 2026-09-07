@@ -1,5 +1,5 @@
 """
-QueryNest backend entrypoint.
+Private Document Assistant backend entrypoint.
 
 Phase 2 added authentication (email/password) and chat/message history
 (Postgres). This phase adds document ingestion (app/api/documents.py) and
@@ -23,7 +23,7 @@ from app.core.config import get_settings
 settings = get_settings()
 
 app = FastAPI(
-    title="QueryNest API",
+    title="Private Document Assistant API",
     description="Private, secure document chat assistant - backend API",
     version="0.3.0",
 )
