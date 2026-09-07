@@ -354,7 +354,9 @@ export default function AppShellPage() {
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-600 text-white">
               <Lock size={14} strokeWidth={2.5} />
             </div>
-            <span className="text-lg font-bold tracking-tight dark:text-white">QueryNest</span>
+            <span className="text-sm font-bold leading-tight tracking-tight dark:text-white">
+              Private Document Assistant
+            </span>
           </div>
           <ThemeToggle compact />
         </div>
@@ -488,7 +490,7 @@ export default function AppShellPage() {
                       }`}
                     >
                       <div
-                        title={isUser ? user?.full_name ?? user?.email ?? "You" : "QueryNest"}
+                        title={isUser ? user?.full_name ?? user?.email ?? "You" : "Private Document Assistant"}
                         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
                           isUser
                             ? "bg-slate-700 text-white dark:bg-slate-600"
@@ -504,7 +506,7 @@ export default function AppShellPage() {
                       <div className="flex min-w-0 flex-col gap-1">
                         {!isUser && (
                           <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
-                            QueryNest
+                            Private Document Assistant
                           </span>
                         )}
                         <div className="flex items-end gap-1.5">

@@ -23,7 +23,9 @@ export default function AuthLayout({
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
             <Lock size={16} strokeWidth={2.5} />
           </div>
-          <span className="text-xl font-bold tracking-tight dark:text-white">QueryNest</span>
+          <span className="text-xl font-bold tracking-tight dark:text-white">
+            Private Document Assistant
+          </span>
         </Link>
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-card dark:border-slate-800 dark:bg-slate-900">
           <h1 className="text-lg font-semibold dark:text-white">{title}</h1>

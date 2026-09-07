@@ -11,7 +11,7 @@ function Logo() {
         <Lock size={16} strokeWidth={2.5} />
       </div>
       <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white">
-        QueryNest
+        Private Document Assistant
       </span>
     </div>
   );
@@ -167,7 +167,7 @@ export default function HomePage() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white px-6 py-6 text-center text-xs text-slate-400 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-500">
-        QueryNest - a private, secure document chat assistant.
+        Private Document Assistant - a private, secure document chat assistant, by QueryNest.
       </footer>
     </div>
   );
