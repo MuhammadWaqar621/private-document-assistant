@@ -555,7 +555,7 @@ export default function AppShellPage() {
                     </div>
                     <div className="flex min-w-0 flex-col gap-1">
                       <span className="px-1 text-xs font-medium text-slate-400 dark:text-slate-500">
-                        QueryNest
+                        Private Document Assistant
                       </span>
                       {streamingReply === "" && agentStatus ? (
                         <div className="flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm text-slate-500 shadow-card dark:bg-slate-900 dark:text-slate-400">
