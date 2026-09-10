@@ -21,8 +21,10 @@ import os
 from dataclasses import dataclass
 from typing import AsyncGenerator, List, Literal, Optional, TypedDict
 
+from openai import RateLimitError
+
 from app.engine.azure_client import get_embedding_client, get_embedding_config
-from app.engine.llm_provider import get_active_chat_provider
+from app.engine.llm_provider import get_active_chat_provider, get_chat_model_chain
 from app.engine.qdrant_client import SearchResult, search
 
 DEFAULT_TOP_K = 5
@@ -175,6 +177,24 @@ def _build_context_block(chunks: List[SearchResult]) -> str:
     return "\n\n---\n\n".join(f"[{chunk.filename}, p.{chunk.page_number}]\n{chunk.text}" for chunk in chunks)
 
 
+async def _create_stream_with_fallback(provider, **kwargs):
+    """`provider.client.chat.completions.create(model=..., **kwargs)`,
+    trying each model in the provider's fallback chain (Groq only - Azure
+    always returns just its own single model, see
+    llm_provider.get_chat_model_chain()) until one succeeds or all are
+    rate-limited right now. Only a rate-limit error triggers the next
+    model - any other failure propagates immediately (unchanged from
+    before this existed), since it's a real error, not a quota issue."""
+    last_exc: Optional[Exception] = None
+    for model in await get_chat_model_chain(provider):
+        try:
+            return await provider.client.chat.completions.create(model=model, **kwargs)
+        except RateLimitError as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError("No Groq chat model available")
+
+
 @dataclass(frozen=True)
 class AgentEvent:
     """One item from stream_agentic_reply()'s async generator - either a
@@ -224,8 +244,8 @@ async def stream_agentic_reply(
 
     yield AgentEvent("status", "Thinking...")
 
-    stream = await provider.client.chat.completions.create(
-        model=provider.model,
+    stream = await _create_stream_with_fallback(
+        provider,
         messages=messages,
         tools=SEARCH_DOCUMENTS_TOOL,
         tool_choice="auto",
@@ -305,8 +325,8 @@ async def stream_agentic_reply(
     messages.append({"role": "assistant", "content": None, "tool_calls": assistant_tool_calls})
     messages.extend(tool_result_messages)
 
-    final_stream = await provider.client.chat.completions.create(
-        model=provider.model,
+    final_stream = await _create_stream_with_fallback(
+        provider,
         messages=messages,
         stream=True,
     )
