@@ -8,18 +8,21 @@ document can also be uploaded to the user's account-level "library" (via
 POST /api/documents, no chat involved) with `chat_id=None` - those are
 automatically searchable from every chat the user owns (the default
 scope="all" retrieval never filters on chat_id at all - see
-app/engine/qdrant_client.py's search()), while still being invisible to
+app/engine/vector_store.py's search()), while still being invisible to
 anyone else. A `chat_id="chat"`-scoped search (the "only search this
 chat's documents" checkbox) only matches an exact chat_id, so library
 documents are excluded from that narrower mode - they aren't "this
 chat's" uploads.
 
-Raw file bytes are NOT stored in Postgres - they live on local disk at
-storage/{user_id}/{document_id}/original.<ext> (see app/api/documents.py);
-`storage_path` records where, so the file can be re-read or deleted later.
+Raw file bytes are NOT stored in Postgres - they live in Vercel Blob
+storage at a `{user_id}/{document_id}/original.<ext>` pathname (see
+app/api/documents.py and app/engine/blob_storage.py); `storage_path`
+records the blob's public URL, so the file can be re-read or deleted
+later.
 
-Ingestion (extract -> chunk -> embed -> upsert into Qdrant, via
-app/engine/ingestion.py) runs synchronously inside the upload request for
+Ingestion (extract -> chunk -> embed -> upsert into the pgvector-backed
+document_chunks table, via app/engine/ingestion.py) runs synchronously
+inside the upload request for
 this project's portfolio scope - `status` starts at "processing" and is
 set to "ready" or "failed" (+ `error_message`) before the response is
 returned. A production deployment would instead enqueue this onto a

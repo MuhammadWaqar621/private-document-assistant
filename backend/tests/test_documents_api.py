@@ -8,13 +8,30 @@ monkeypatched to fake, deterministic results, so the test exercises the
 *endpoint's* status-transition logic (what it does with an
 IngestionResult) rather than the engine's real ingestion pipeline, which
 is covered separately by test_chunking.py/test_extraction.py/
-test_qdrant_isolation.py.
+test_vector_store_isolation.py. Similarly, `upload_blob`/`delete_blob`
+(Vercel Blob - app/engine/blob_storage.py) are monkeypatched to an
+in-memory fake so these tests never make a real network call or require
+BLOB_READ_WRITE_TOKEN to be set.
 """
 
 import app.api.documents as documents_module
+from app.engine.blob_storage import UploadedBlob
 from app.engine.ingestion import IngestionResult
 
 from .conftest import auth_headers, signup
+
+
+def _fake_upload_blob(store):
+    """Returns a fake `upload_blob` that records (pathname -> bytes) in
+    `store` instead of calling the real Vercel Blob API, and hands back a
+    deterministic fake URL - mirrors what monkeypatching STORAGE_ROOT used
+    to do for the old local-disk implementation."""
+
+    def _upload(pathname, data, content_type=None):
+        store[pathname] = data
+        return UploadedBlob(url=f"https://example-blob.vercel-storage.com/{pathname}", pathname=pathname)
+
+    return _upload
 
 
 def _create_chat(client, token_body):
@@ -50,9 +67,10 @@ def test_upload_returns_503_when_azure_not_configured(client, monkeypatch):
     assert response.json()["detail"]["error"] == "azure_ai_not_configured"
 
 
-def test_upload_transitions_to_ready_on_successful_ingestion(client, monkeypatch, tmp_path):
+def test_upload_transitions_to_ready_on_successful_ingestion(client, monkeypatch):
+    blob_store: dict = {}
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob(blob_store))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
@@ -70,14 +88,16 @@ def test_upload_transitions_to_ready_on_successful_ingestion(client, monkeypatch
     assert body["error_message"] is None
     assert body["filename"] == "notes.txt"
 
-    # The raw bytes were actually written to disk under STORAGE_ROOT.
-    written = list(tmp_path.rglob("original.*"))
-    assert len(written) == 1
+    # The raw bytes were actually uploaded to Vercel Blob (faked here).
+    assert len(blob_store) == 1
+    [(pathname, data)] = blob_store.items()
+    assert pathname.endswith("/original.txt")
+    assert data == b"hello world"
 
 
-def test_upload_transitions_to_failed_on_ingestion_failure(client, monkeypatch, tmp_path):
+def test_upload_transitions_to_failed_on_ingestion_failure(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
@@ -97,9 +117,9 @@ def test_upload_transitions_to_failed_on_ingestion_failure(client, monkeypatch, 
     assert body["error_message"] == "Embedding failed: boom"
 
 
-def test_list_documents_scoped_to_the_chat_and_owner(client, monkeypatch, tmp_path):
+def test_list_documents_scoped_to_the_chat_and_owner(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
@@ -144,18 +164,18 @@ def test_list_documents_404s_for_another_users_chat(client):
     assert response.status_code == 404
 
 
-def test_delete_document_404s_for_another_users_chat(client, monkeypatch, tmp_path):
+def test_delete_document_404s_for_another_users_chat(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
         lambda **kwargs: IngestionResult(success=True, chunk_count=1),
     )
-    # Avoid touching the real Qdrant collection for this ownership-only
+    # Avoid touching the real vector store for this ownership-only
     # test - delete_document is never expected to be reached here since
     # the chat-ownership check 404s first.
-    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+    monkeypatch.setattr(documents_module, "delete_document_vectors", lambda document_id: None)
 
     owner = signup(client)
     intruder = signup(client)
@@ -169,15 +189,15 @@ def test_delete_document_404s_for_another_users_chat(client, monkeypatch, tmp_pa
     assert response.status_code == 404
 
 
-def test_delete_document_succeeds_for_its_owner(client, monkeypatch, tmp_path):
+def test_delete_document_succeeds_for_its_owner(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
         lambda **kwargs: IngestionResult(success=True, chunk_count=1),
     )
-    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+    monkeypatch.setattr(documents_module, "delete_document_vectors", lambda document_id: None)
 
     owner = signup(client)
     chat = _create_chat(client, owner)
@@ -195,9 +215,9 @@ def test_delete_document_succeeds_for_its_owner(client, monkeypatch, tmp_path):
 # --- account-level "library" documents (POST /api/documents, no chat_id) --
 
 
-def test_library_upload_requires_no_chat_and_transitions_to_ready(client, monkeypatch, tmp_path):
+def test_library_upload_requires_no_chat_and_transitions_to_ready(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     captured_kwargs = {}
 
     def _fake_ingest(**kwargs):
@@ -218,9 +238,9 @@ def test_library_upload_requires_no_chat_and_transitions_to_ready(client, monkey
     assert captured_kwargs["chat_id"] is None
 
 
-def test_library_documents_are_separate_from_chat_documents(client, monkeypatch, tmp_path):
+def test_library_documents_are_separate_from_chat_documents(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
@@ -239,9 +259,9 @@ def test_library_documents_are_separate_from_chat_documents(client, monkeypatch,
     assert [d["filename"] for d in library_listing.json()] == ["library-only.txt"]
 
 
-def test_library_documents_are_scoped_to_their_uploader(client, monkeypatch, tmp_path):
+def test_library_documents_are_scoped_to_their_uploader(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
@@ -262,15 +282,15 @@ def test_library_documents_are_scoped_to_their_uploader(client, monkeypatch, tmp
     assert [d["filename"] for d in owner_listing.json()] == ["owner-only.txt"]
 
 
-def test_delete_library_document_404s_for_another_user(client, monkeypatch, tmp_path):
+def test_delete_library_document_404s_for_another_user(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
         lambda **kwargs: IngestionResult(success=True, chunk_count=1),
     )
-    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+    monkeypatch.setattr(documents_module, "delete_document_vectors", lambda document_id: None)
 
     owner = signup(client)
     intruder = signup(client)
@@ -284,15 +304,15 @@ def test_delete_library_document_404s_for_another_user(client, monkeypatch, tmp_
     assert len(owner_listing.json()) == 1
 
 
-def test_delete_library_document_succeeds_for_its_owner(client, monkeypatch, tmp_path):
+def test_delete_library_document_succeeds_for_its_owner(client, monkeypatch):
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",
         lambda **kwargs: IngestionResult(success=True, chunk_count=1),
     )
-    monkeypatch.setattr(documents_module, "qdrant_delete_document", lambda document_id: None)
+    monkeypatch.setattr(documents_module, "delete_document_vectors", lambda document_id: None)
 
     owner = signup(client)
     doc = _upload_library(client, owner).json()
@@ -304,12 +324,12 @@ def test_delete_library_document_succeeds_for_its_owner(client, monkeypatch, tmp
     assert listing.json() == []
 
 
-def test_a_chat_scoped_document_never_appears_in_the_library_listing(client, monkeypatch, tmp_path):
+def test_a_chat_scoped_document_never_appears_in_the_library_listing(client, monkeypatch):
     # A document uploaded to a specific chat has chat_id set - it must
     # never show up in the account-level library listing, which only
     # returns chat_id IS NULL rows.
     monkeypatch.setattr(documents_module, "azure_ai_configured", lambda: True)
-    monkeypatch.setattr(documents_module, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(documents_module, "upload_blob", _fake_upload_blob({}))
     monkeypatch.setattr(
         documents_module,
         "ingest_document",

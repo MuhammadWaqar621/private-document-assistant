@@ -15,10 +15,10 @@ Two separate Azure OpenAI deployments are used:
   - chat (any Azure OpenAI chat deployment): LLM_ENDPOINT /
     LLM_ENDPOINT_APIKEY / LLM_MODEL_NAME
 
-AZURE_EM_DIMENSIONS configures the embedding vector size used when creating
-the Qdrant collection (see qdrant_client.py) - Azure text-embedding models
-are typically 1536 (text-embedding-ada-002 / text-embedding-3-small) or
-3072 (text-embedding-3-large) dimensions; default here is 1536.
+AZURE_EM_DIMENSIONS configures the embedding vector size used by the
+pgvector `embedding` column (see vector_store.py) - Azure text-embedding
+models are typically 1536 (text-embedding-ada-002 / text-embedding-3-small)
+or 3072 (text-embedding-3-large) dimensions; default here is 1536.
 """
 
 import os

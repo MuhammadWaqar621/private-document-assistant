@@ -22,7 +22,7 @@ Retrieval scope: `MessageCreate.scope` picks between the two supported
 modes - "all" (the default) searches every document the current user has
 uploaded across every one of their chats, "chat" restricts retrieval to
 just this chat's uploads. Either way, retrieval is always scoped to the
-current user (app/engine/qdrant_client.py's `user_id` filter is
+current user (app/engine/vector_store.py's `user_id` filter is
 unconditional) - only the `chat_id` narrowing is opt-in.
 """
 
@@ -48,8 +48,8 @@ class MessageCreate(BaseModel):
     content: str
     # "all" (default): retrieve from every document this user has uploaded,
     # across all of their chats. "chat": restrict retrieval to just this
-    # chat's uploads (opt-in narrowing - see app/engine/qdrant_client.py's
-    # search() docstring for the underlying Qdrant filter).
+    # chat's uploads (opt-in narrowing - see app/engine/vector_store.py's
+    # search() docstring for the underlying pgvector filter).
     scope: Literal["all", "chat"] = "all"
 
 
@@ -127,7 +127,7 @@ async def send_message(
     # scope="all" (default): the search tool the model may call is allowed
     # to reach every chat this user owns (chat_id=None passed through to
     # retrieve()). scope="chat": restrict it to this chat only. Either way,
-    # app/engine/qdrant_client.py's search() always filters by user_id -
+    # app/engine/vector_store.py's search() always filters by user_id -
     # that part is never optional, and it's the caller (this endpoint),
     # never the model, that supplies these values - see
     # stream_agentic_reply()'s docstring.

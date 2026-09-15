@@ -16,7 +16,7 @@ import pytest
 
 from app.engine import rag as rag_module
 from app.engine.llm_provider import ActiveChatProvider
-from app.engine.qdrant_client import SearchResult
+from app.engine.vector_store import SearchResult
 
 
 @dataclass

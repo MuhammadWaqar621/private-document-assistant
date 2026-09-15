@@ -34,13 +34,14 @@ these tests are not a substitute for running `alembic upgrade head`
 against Postgres, they're a substitute for the manual curl-based checks
 that used to be the only way to verify this code.
 
-`engine/qdrant_client.py`'s isolation tests (test_qdrant_isolation.py) are
-different: they run against a REAL Qdrant instance (the same one
-docker-compose starts), using a disposable, uniquely-named collection per
-test so they never touch the `querynest_documents` collection real
-documents live in. Qdrant's filtering behavior is the single most
-important property in this project, so it is tested against the real
-thing rather than mocked.
+`engine/vector_store.py`'s isolation tests (test_vector_store_isolation.py)
+are different: they run against a REAL Postgres instance with the
+`vector` extension available (the same one docker-compose starts - see
+docker-compose.yml's pgvector/pgvector:pg16 image), using a disposable,
+uniquely-named table per test so they never touch the real
+`document_chunks` table production documents live in. pgvector's
+filtering behavior is the single most important property in this
+project, so it is tested against the real thing rather than mocked.
 """
 
 import os
@@ -68,6 +69,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.api.messages as messages_module
 from app import models  # noqa: F401 - registers all models on Base.metadata
 from app.core.config import get_settings
 from app.db.base_class import Base
@@ -98,7 +100,19 @@ def db_engine():
 def client(db_engine, monkeypatch):
     """A TestClient wired to the per-test SQLite database via a
     dependency_overrides swap of get_db - the app's own module-level
-    Postgres engine (app/db/session.py) is never touched."""
+    Postgres engine (app/db/session.py) is never touched.
+
+    app/api/messages.py's event_stream() deliberately opens its own fresh
+    SessionLocal() (rather than the request-scoped `db` this fixture
+    overrides above) to persist the final assistant Message once a stream
+    completes - see that module's docstring for why. Left unpatched, that
+    write would go to whatever the real DATABASE_URL happens to point at
+    instead of this test's isolated SQLite database, which only "works"
+    by accident of whatever pre-existing rows are (or aren't) sitting in
+    that real database. Patching it to the same per-test session factory
+    makes the write land in the same isolated database as everything
+    else, so these tests behave the same regardless of the real
+    DATABASE_URL's contents."""
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
 
     def override_get_db():
@@ -109,6 +123,7 @@ def client(db_engine, monkeypatch):
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    monkeypatch.setattr(messages_module, "SessionLocal", TestingSessionLocal)
 
     # A valid default so most tests don't have to think about JWT config -
     # tests that specifically exercise the "JWT not configured" 503 path

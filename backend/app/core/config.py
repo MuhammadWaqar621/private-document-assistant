@@ -34,11 +34,19 @@ class Settings(BaseSettings):
     APP_NAME: str = "Private Document Assistant"
     ENVIRONMENT: str = "development"
 
-    # --- Database -----------------------------------------------------
+    # --- Database (also holds the pgvector-backed document_chunks table -
+    # see app/engine/vector_store.py; a Vercel deployment points this at
+    # Vercel Postgres, which supports the `vector` extension natively, so
+    # no separate vector database is needed) ----------------------------
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres:5432/querynest"
 
-    # --- Qdrant (vector DB) ------------------------------------------------
-    QDRANT_URL: str = "http://qdrant:6333"
+    # --- Vercel Blob (uploaded document originals) --------------------------
+    # The fixed env var name Vercel injects once Blob storage is provisioned
+    # for the project. Declared here purely so it shows up alongside the
+    # rest of Settings for anyone inspecting it - app/engine/blob_storage.py
+    # reads it directly via os.getenv, not through this Settings object,
+    # matching the rest of app/engine/'s isolation contract.
+    BLOB_READ_WRITE_TOKEN: Optional[str] = None
 
     # --- Frontend (used to build links in emails / OAuth redirects) --------
     FRONTEND_URL: str = "http://localhost:5173"
@@ -48,8 +56,8 @@ class Settings(BaseSettings):
     AZURE_EM_API_KEY: Optional[str] = None
     AZURE_EM_API_VERSION: Optional[str] = None
     AZURE_EM_MODEL: Optional[str] = None
-    # Embedding vector size, used to size the Qdrant collection (see
-    # app/engine/qdrant_client.py). Not required for the `azure_ai`
+    # Embedding vector size, used to size the pgvector `embedding` column
+    # (see app/engine/vector_store.py). Not required for the `azure_ai`
     # config-status group - it has a sensible code default (1536) in
     # app/engine/azure_client.get_embedding_dimensions(), so a deployment
     # that doesn't set it is still considered fully configured. Declared

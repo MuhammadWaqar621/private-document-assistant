@@ -3,8 +3,8 @@
 Ownership (`user_id`) is what the RAG phase relies on for per-user
 isolation - every chat lookup in the API layer filters by the current
 user. Documents uploaded to a chat (see app/models/document.py) are scoped
-to that chat only: the Qdrant payload filter in
-app/engine/qdrant_client.py enforces that a document uploaded here is
+to that chat only: the pgvector row filter in
+app/engine/vector_store.py enforces that a document uploaded here is
 never retrievable from a different chat, even for the same user.
 """
 

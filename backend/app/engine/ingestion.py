@@ -17,7 +17,7 @@ from app.engine.azure_client import (
 )
 from app.engine.chunking import Chunk, chunk_pages
 from app.engine.extraction import UnsupportedFileTypeError, extract_pages
-from app.engine.qdrant_client import ChunkWithEmbedding, upsert_chunks
+from app.engine.vector_store import ChunkWithEmbedding, upsert_chunks
 
 EMBEDDING_BATCH_SIZE = 16
 
@@ -43,7 +43,7 @@ def ingest_document(
 
     `chat_id=None` marks an account-level "library" document (not tied to
     any one chat) - see app/models/document.py's module docstring. It's
-    stored verbatim in the Qdrant payload (app/engine/qdrant_client.py's
+    stored verbatim in the document_chunks row (app/engine/vector_store.py's
     upsert_chunks()), which is what makes a scope="all" search find it
     from every chat while a scope="chat" search (an explicit chat_id)
     does not."""

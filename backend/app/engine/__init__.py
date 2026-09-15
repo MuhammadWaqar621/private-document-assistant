@@ -9,7 +9,7 @@ Isolation contract (do not violate this):
     plain dicts/dataclasses) and returns plain Python objects - never an
     ORM object, never a FastAPI Request/Response.
   - Configuration is read directly from environment variables (see
-    engine/azure_client.py, engine/qdrant_client.py) rather than through
+    engine/azure_client.py, engine/vector_store.py) rather than through
     app.core.config.Settings, so this package has zero dependency on the
     rest of the app and can be imported/tested/reused in isolation (e.g.
     in a standalone script, a notebook, or a different service entirely).
@@ -29,8 +29,12 @@ Modules:
                       including OCR (EasyOCR) for images and scanned PDF
                       pages with no extractable text layer
   - chunking.py:     page text -> embedding-sized chunks
-  - qdrant_client.py: vector storage/search, with per-(user_id, chat_id)
-                      tenant isolation enforced in every query
+  - vector_store.py: pgvector-backed vector storage/search (same Postgres
+                      database as the rest of the app), with per-
+                      (user_id, chat_id) tenant isolation enforced in
+                      every query
+  - blob_storage.py:  Vercel Blob client (upload/download/delete) for
+                      uploaded document originals - no local disk writes
   - ingestion.py:     extract -> chunk -> embed -> upsert, no DB writes
   - rag.py:           retrieve() + stream_agentic_reply() (tool-calling
                       agent) for the chat endpoint

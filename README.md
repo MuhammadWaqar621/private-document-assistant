@@ -15,8 +15,13 @@ grounding an LLM's answers in retrieved context rather than letting it
 hallucinate freely - with every document scoped to the account (and, by
 default, the specific conversation) that uploaded it.
 
-> **Status:** Feature-complete for its intended scope. Document ingestion
-> (PDF/DOCX/TXT/JPG/PNG → chunk → embed → Qdrant, with EasyOCR filling in
+> **Status:** Feature-complete for its intended scope, and adapted to
+> deploy entirely on Vercel (Vercel Postgres + pgvector for the vector
+> index, Vercel Blob for uploaded originals, a Vercel Python serverless
+> function for the backend, a static Vercel site for the frontend - no
+> AWS, no separate Qdrant/Neon account, no Docker required to deploy; see
+> "Vercel deployment" below). Document ingestion
+> (PDF/DOCX/TXT/JPG/PNG → chunk → embed → pgvector, with EasyOCR filling in
 > for images and scanned PDF pages that have no extractable text layer),
 > the RAG chat pipeline (retrieve → stream an answer back over
 > Server-Sent Events from either Groq or Azure OpenAI, selectable via
@@ -49,7 +54,7 @@ real `.env`: Azure OpenAI and SMTP configured.
 
 The final screenshot is a real round trip through the whole pipeline
 described below: a PDF fixture was uploaded and ingested (extract → chunk
-→ embed → Qdrant), a question was asked, and Azure OpenAI's streamed
+→ embed → pgvector), a question was asked, and Azure OpenAI's streamed
 answer came back grounded in - and citing - the uploaded document's actual
 text (`sample.pdf, p.1`).
 
@@ -61,23 +66,34 @@ flowchart TB
         FE["Frontend<br/>React + Vite + TypeScript + Tailwind"]
     end
 
-    subgraph Backend["Backend - FastAPI"]
+    subgraph Backend["Backend - FastAPI (Vercel serverless function)"]
         API["API layer<br/>app/api/*.py<br/>auth, ownership checks,<br/>DB persistence, SSE streaming"]
-        ENGINE["engine/ package<br/>extraction (+ EasyOCR fallback) · chunking · embedding<br/>Qdrant search · RAG prompt/streaming · provider selection<br/>(zero dependency on API/DB/auth code)"]
+        ENGINE["engine/ package<br/>extraction (+ EasyOCR fallback) · chunking · embedding<br/>pgvector search · RAG prompt/streaming · provider selection<br/>(zero dependency on API/DB/auth code)"]
     end
 
-    PG[("Postgres<br/>users, password_reset_tokens,<br/>chats, messages,<br/>documents (status/metadata)")]
-    QD[("Qdrant<br/>vector store<br/>every point tagged with<br/>user_id + chat_id")]
+    PG[("Vercel Postgres (Neon-backed)<br/>users, password_reset_tokens,<br/>chats, messages,<br/>documents (status/metadata),<br/>AND document_chunks (pgvector embeddings)<br/>- one database, no separate vector service")]
+    BLOB[("Vercel Blob<br/>uploaded document originals<br/>- no local/persistent disk on Vercel")]
     AZ["Azure OpenAI<br/>embeddings (always) +<br/>chat completions (if LLM_PROVIDER=azure)"]
     GQ["Groq<br/>chat completions (if LLM_PROVIDER=groq, default) +<br/>Whisper STT + PlayAI TTS"]
 
     FE -- "HTTP /api/* + SSE" --> API
     API -- "plain args in, plain data out" --> ENGINE
     API -- "SQLAlchemy" --> PG
-    ENGINE -- "vector upsert/search,<br/>always filtered by user_id,<br/>optionally by chat_id" --> QD
+    API -- "upload/download/delete original files" --> BLOB
+    ENGINE -- "pgvector upsert/search (cosine distance),<br/>always filtered by user_id,<br/>optionally by chat_id" --> PG
     ENGINE -- "embeddings, and chat<br/>completions when selected" --> AZ
     ENGINE -- "chat completions (default),<br/>speech-to-text, text-to-speech" --> GQ
 ```
+
+**Runs entirely on Vercel** - the FastAPI backend deploys as a Vercel
+Python serverless function, the frontend as a static Vercel site, the
+relational data AND the vector index live in one Vercel Postgres database
+(via the `pgvector` extension - see "Vector search (pgvector)" below), and
+uploaded file originals live in Vercel Blob storage. No AWS, no separate
+Qdrant Cloud/Neon account, no Docker required to deploy - see "Vercel
+deployment" below. Local development still uses docker-compose (Postgres
+only now, using the `pgvector/pgvector` image so the extension is
+available locally too).
 
 **Document retrieval scope:** by default, a question asked in *any* chat
 draws on *every* document that user has uploaded, across *all* of their
@@ -87,53 +103,65 @@ this chat's documents"** in the message input narrows retrieval down to
 just the currently-selected chat's uploads. In both modes, retrieval is
 **always** scoped to the authenticated user - one user's documents are
 never retrievable by another, regardless of scope. This isn't a UI
-convention - `engine/qdrant_client.py`'s `search()` applies a `user_id`
-`must` filter condition unconditionally on every vector search, and only
-adds a `chat_id` `must` condition when the caller explicitly asks for the
-chat-scoped mode. See "Document upload + RAG chat flow" below for exactly
-how the two modes map to the `scope` field on
-`POST /api/chats/{chat_id}/messages`.
+convention - `engine/vector_store.py`'s `search()` applies a `user_id`
+filter condition unconditionally on every vector search, and only adds a
+`chat_id` condition when the caller explicitly asks for the chat-scoped
+mode. See "Document upload + RAG chat flow" below for exactly how the two
+modes map to the `scope` field on `POST /api/chats/{chat_id}/messages`.
 
-- **Backend** — Python 3.11+, FastAPI, SQLAlchemy + Alembic for migrations,
-  Postgres for relational data (users, chats, messages, documents), Qdrant
-  for vector search. Embeddings always go through `openai.AzureOpenAI` —
-  this project targets **Azure OpenAI** specifically for embeddings, not
-  the public OpenAI API. **Chat completions** are provider-selectable via
+- **Backend** — Python 3.11+, FastAPI (deployed as a Vercel Python
+  serverless function), SQLAlchemy + Alembic for migrations, one Vercel
+  Postgres database for BOTH relational data (users, chats, messages,
+  documents) AND vector search (the `pgvector` extension's
+  `document_chunks` table - see "Vector search (pgvector)" below).
+  Embeddings always go through `openai.AzureOpenAI` — this project
+  targets **Azure OpenAI** specifically for embeddings, not the public
+  OpenAI API. **Chat completions** are provider-selectable via
   `LLM_PROVIDER` (`"groq"`, the default, or `"azure"`) — see
   `app/engine/llm_provider.py` and "Chat provider selection" below. Groq's
   API is OpenAI-compatible, so the same `openai` package is reused for it
   too (pointed at Groq's base URL), and also backs speech-to-text
   (Whisper) and text-to-speech (PlayAI TTS) — see "Speech" below.
 - **`app/engine/`** — the RAG engine (extraction + OCR, chunking,
-  embedding, Qdrant access, retrieval, streaming chat, provider selection)
-  is a self-contained package with **zero imports** from `app/api`,
-  `app/models` (SQLAlchemy), or auth code. It reads its own configuration
-  straight from environment variables and every function takes/returns
-  plain Python values (ints, strings, bytes, dicts/dataclasses) — never an
-  ORM object or a FastAPI Request/Response. This makes it independently
-  testable and reusable outside this specific FastAPI app.
-  `app/engine/groq_client.py` (Groq client construction for STT/TTS/chat)
-  and `app/engine/llm_provider.py` (the `LLM_PROVIDER` selection layer)
-  follow this same isolation contract, exactly like `azure_client.py` -
-  they're part of the engine, not the API layer, even though
-  `app/api/speech.py` is the thin API-layer wrapper that exposes the
-  STT/TTS functions over HTTP (auth-checked, no DB/ownership involved).
-  `app/api/documents.py` and `app/api/messages.py` are the *only* code
-  that talks to both the DB/auth stack and `app/engine/` — they check
-  auth/ownership, call a plain engine function, and persist the result.
-  See `app/engine/__init__.py` for the full isolation contract.
-- **Frontend** — React + TypeScript + Vite + Tailwind CSS.
-- **Vector DB** — Qdrant, run locally via docker-compose (or pointed at
-  Qdrant Cloud — see below).
+  embedding, pgvector access, retrieval, streaming chat, provider
+  selection) is a self-contained package with **zero imports** from
+  `app/api`, `app/models` (SQLAlchemy), or auth code. It reads its own
+  configuration straight from environment variables and every function
+  takes/returns plain Python values (ints, strings, bytes,
+  dicts/dataclasses) — never an ORM object or a FastAPI
+  Request/Response. This makes it independently testable and reusable
+  outside this specific FastAPI app. `app/engine/groq_client.py` (Groq
+  client construction for STT/TTS/chat), `app/engine/llm_provider.py`
+  (the `LLM_PROVIDER` selection layer), and `app/engine/blob_storage.py`
+  (Vercel Blob client for uploaded originals) follow this same isolation
+  contract, exactly like `azure_client.py` - they're part of the engine,
+  not the API layer, even though `app/api/speech.py` is the thin
+  API-layer wrapper that exposes the STT/TTS functions over HTTP
+  (auth-checked, no DB/ownership involved). `app/api/documents.py` and
+  `app/api/messages.py` are the *only* code that talks to both the
+  DB/auth stack and `app/engine/` — they check auth/ownership, call a
+  plain engine function, and persist the result. See
+  `app/engine/__init__.py` for the full isolation contract.
+- **Frontend** — React + TypeScript + Vite + Tailwind CSS, deployed as a
+  static Vercel site.
+- **Vector search** — pgvector, on the SAME Postgres database as the rest
+  of the app's relational data (Vercel Postgres is Neon-backed and
+  supports the `vector` extension natively) - no separate vector service,
+  run locally via docker-compose's `pgvector/pgvector` Postgres image (see
+  "Vector search (pgvector)" below).
+- **File storage** — Vercel Blob for uploaded document originals (no
+  local/persistent disk on Vercel's serverless functions).
 - **Auth** — email/password only (JWT access + refresh tokens,
   `passlib`/bcrypt hashing), plus forgot/reset password via SMTP
   (`aiosmtplib`). See "Authentication & chat history" below.
 
 ## Document upload + RAG chat flow
 
-1. **Upload** — `POST /api/chats/{chat_id}/documents` (multipart) saves
-   the raw file to `storage/{user_id}/{document_id}/original.<ext>`,
-   creates a `Document` row (`status=processing`), then runs ingestion:
+1. **Upload** — `POST /api/chats/{chat_id}/documents` (multipart) uploads
+   the raw file to Vercel Blob storage at a
+   `{user_id}/{document_id}/original.<ext>` pathname (`app/engine/blob_storage.py`
+   - see "File storage (Vercel Blob)" below), creates a `Document` row
+   (`status=processing`), then runs ingestion:
    - `app/engine/extraction.py` pulls text out of the file - one entry per
      page for PDF (`pdfplumber`), a single page for TXT, a single page for
      JPG/JPEG/PNG (OCR'd via EasyOCR), and for DOCX (which has no native
@@ -147,13 +175,14 @@ how the two modes map to the `scope` field on
      splitting pages that are unusually long.
    - `app/engine/ingestion.py` embeds each chunk in batches via the Azure
      embeddings deployment (always Azure, regardless of `LLM_PROVIDER` -
-     see "Chat provider selection" below) and upserts them into Qdrant
-     (`app/engine/qdrant_client.py`), tagged with `document_id`,
-     `user_id`, `chat_id`, `filename`, and `page_number`.
+     see "Chat provider selection" below) and upserts them into the
+     pgvector-backed `document_chunks` table on the SAME Postgres database
+     (`app/engine/vector_store.py`), tagged with `document_id`, `user_id`,
+     `chat_id`, `filename`, and `page_number`.
    - On success the `Document` row becomes `status=ready`; on any failure
-     (unsupported file type, extraction error, embedding/Qdrant failure)
-     it becomes `status=failed` with a human-readable `error_message` -
-     the upload request itself never crashes.
+     (unsupported file type, extraction error, embedding/vector-store
+     failure) it becomes `status=failed` with a human-readable
+     `error_message` - the upload request itself never crashes.
 2. **Ask a question** — `POST /api/chats/{chat_id}/messages` takes
    `{content, scope}` (`scope` is `"all"` or `"chat"`, defaulting to
    `"all"` when omitted), persists the user's message, and streams the
@@ -169,7 +198,7 @@ how the two modes map to the `scope` field on
      `AGENT_SYSTEM_PROMPT`.
    - **For greetings, small talk, or questions about the assistant itself**
      ("what is this", "who built it"), the model answers directly in that
-     first streamed call - no tool call, no Qdrant query, no second
+     first streamed call - no tool call, no vector-store query, no second
      completion. This is what makes "hi" from a user who has documents
      sitting in some *other* chat get a plain, natural greeting instead of
      an awkward "the provided excerpts don't contain any information..."
@@ -182,7 +211,8 @@ how the two modes map to the `scope` field on
      through the tool first, so the decision of whether an answer is
      grounded is never skipped. The endpoint executes the call for real:
      `app/engine/rag.retrieve()` embeds the model's `query` argument and
-     searches Qdrant, filtered by `user_id` (always, from the
+     searches the pgvector-backed document_chunks table, filtered by
+     `user_id` (always, from the
      authenticated session - **never** an argument the model can supply)
      and by `chat_id` only when `scope="chat"` (also supplied by the
      endpoint, not the model). The result is fed back as a `role="tool"`
@@ -268,7 +298,7 @@ is read differs - only whether it's tied to one chat or not.
 
 - **Automatically searchable from every chat you own** - the default
   `scope="all"` retrieval never filters on `chat_id` at all (see
-  `app/engine/qdrant_client.py`'s `search()`), so a library document
+  `app/engine/vector_store.py`'s `search()`), so a library document
   surfaces for a question in any chat without attaching it anywhere
   first. This is the point of it: upload your reference material once
   (a resume, a policy doc, product docs, whatever you want your
@@ -281,7 +311,7 @@ is read differs - only whether it's tied to one chat or not.
   "this chat's" upload.
 - **Still strictly scoped to the uploading user** - the `user_id` filter
   is unconditional regardless of `chat_id`, library documents included;
-  verified live (and in `test_qdrant_isolation.py`/`test_documents_api.py`)
+  verified live (and in `test_vector_store_isolation.py`/`test_documents_api.py`)
   that a second user's identical question never reaches another
   account's library.
 - **Frontend:** the sidebar's "My documents" button (`frontend/src/
@@ -457,7 +487,8 @@ querynest/
 │   │   │   ├── llm_provider.py  # LLM_PROVIDER selection (groq default | azure) for chat completions
 │   │   │   ├── extraction.py    # file bytes -> [(page_number, text), ...], incl. EasyOCR fallback
 │   │   │   ├── chunking.py      # page text -> embedding-sized chunks
-│   │   │   ├── qdrant_client.py # vector storage/search - user_id always filtered, chat_id optional
+│   │   │   ├── vector_store.py  # pgvector storage/search (same Postgres DB) - user_id always filtered, chat_id optional
+│   │   │   ├── blob_storage.py  # Vercel Blob client (upload/download/delete uploaded originals)
 │   │   │   ├── ingestion.py     # extract -> chunk -> embed -> upsert (no DB writes)
 │   │   │   └── rag.py           # retrieve() + stream_agentic_reply() (tool-calling agent)
 │   │   └── api/
@@ -470,8 +501,11 @@ querynest/
 │   │       └── deps.py          # get_current_user dependency
 │   ├── alembic/                  # migrations (env.py reads DATABASE_URL from Settings)
 │   ├── alembic.ini
+│   ├── api/
+│   │   └── index.py              # Vercel Python function entrypoint - re-exports app.main:app
+│   ├── vercel.json                # routes every request to api/index.py (@vercel/python)
 │   ├── requirements.txt
-│   └── Dockerfile
+│   └── Dockerfile                 # local/docker-compose dev only - not used by the Vercel deploy
 ├── frontend/
 │   ├── src/
 │   │   ├── main.tsx              # BrowserRouter + App
@@ -481,6 +515,7 @@ querynest/
 │   │   ├── lib/                  # api client, auth token storage, types, SSE chat stream
 │   │   └── index.css
 │   ├── .env                       # local dev only (gitignored) - VITE_API_BASE_URL
+│   ├── vercel.json                 # SPA rewrite (client-side routes -> index.html)
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tailwind.config.js
@@ -516,6 +551,12 @@ uploaded document:
    - SMTP values are optional, same 503-instead-of-crash pattern.
    - `GROQ_API_KEY` also gates the `speech` group (mic transcription +
      per-message text-to-speech) - optional, same pattern.
+   - `BLOB_READ_WRITE_TOKEN` - required for document upload to actually
+     store the raw file (see "File storage (Vercel Blob)" below); Vercel
+     Blob is a cloud service with no local equivalent, so even local
+     docker-compose development needs a real token from a Vercel project
+     with Blob storage provisioned. Document upload/delete will fail
+     without it even though the rest of the app works fine locally.
    - `.env` is gitignored — never commit it.
 4. **Bring the whole stack up:**
    ```bash
@@ -549,7 +590,6 @@ uploaded document:
    - Backend health check: http://localhost:8000/health
    - Backend config status: http://localhost:8000/api/config/status
    - Backend interactive API docs: http://localhost:8000/docs
-   - Qdrant dashboard/API: http://localhost:6333/dashboard
 
 ### Running backend/frontend without Docker (local dev)
 
@@ -577,75 +617,110 @@ built with `VITE_API_BASE_URL` baked in at build time instead - see
 `frontend/Dockerfile` and the `VITE_API_BASE_URL` row in "Environment
 variables" below.
 
-## Qdrant setup
+## Vector search (pgvector)
 
-Qdrant is the vector database used to store and search document
-embeddings. In this project it is run as a container alongside everything
-else — no separate setup required for local development.
+Vector embeddings live in the SAME Postgres database as the rest of the
+app's relational data, in a `document_chunks` table with an `embedding
+vector(N)` column (via the `vector` Postgres extension / the `pgvector`
+Python package's `pgvector.sqlalchemy.Vector` type) - there is no separate
+vector database or service to run, locally or in production.
 
-- **Local (default):** `docker-compose up` starts a `qdrant` service from
-  the `qdrant/qdrant:latest` image, exposing:
-  - `6333` — HTTP/REST API (used by `qdrant-client`)
-  - `6334` — gRPC API
-  - A named volume (`qdrant_data`) persists collections across restarts.
+- **Local (default):** `docker-compose up` starts the `postgres` service
+  from the `pgvector/pgvector:pg16` image instead of the plain
+  `postgres:16` image - same Postgres, with the `vector` extension
+  preinstalled (not enabled until a migration runs `CREATE EXTENSION IF
+  NOT EXISTS vector`, which the migration below does).
 
-- **Verify it's running:**
+- **Enable it:** the extension + `document_chunks` table are created by
+  an Alembic migration
+  (`backend/alembic/versions/5e8a1c3f9b02_add_pgvector_document_chunks.py`),
+  not by any application code at import/request time - run it the same
+  way as every other migration (see "Database migrations (Alembic)"
+  below):
   ```bash
-  curl http://localhost:6333/collections
+  cd backend
+  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest alembic upgrade head
   ```
-  A healthy instance returns something like:
-  ```json
-  {"result":{"collections":[]},"status":"ok","time":0.0}
+
+- **Verify it's enabled:**
+  ```bash
+  docker-compose exec postgres psql -U postgres -d querynest -c "\dx" -c "\d document_chunks"
   ```
-  You can also open the built-in dashboard at
-  http://localhost:6333/dashboard.
+  should list the `vector` extension and the `document_chunks` table
+  (with an `embedding vector(1536)` column, by default).
 
-- **Using Qdrant Cloud instead:** if you'd rather not run Qdrant locally
-  (e.g. for a deployed demo), provision a free cluster at
-  https://cloud.qdrant.io, then:
-  1. Set `QDRANT_URL` in `.env` to your cluster URL, e.g.
-     `https://xyz-example.eu-central.aws.cloud.qdrant.io:6333`.
-  2. Set a `QDRANT_API_KEY` env var - `app/engine/qdrant_client.py` reads
-     it (via `os.getenv`, not `app.core.config.Settings` - see the
-     "Architecture" section on why the engine package avoids that
-     dependency) and passes it to `QdrantClient(api_key=...)`.
-  3. You can then remove the `qdrant` service from `docker-compose.yml`
-     (or just stop using its port) since the backend will talk to Qdrant
-     Cloud over HTTPS instead of the local container.
+- **Deployed on Vercel:** Vercel Postgres (Neon-backed) supports the
+  `vector` extension natively - point `DATABASE_URL` at the provisioned
+  Vercel Postgres connection string and run the same `alembic upgrade
+  head` command once, out-of-band (see "Vercel deployment" below); no
+  separate vector-database account or provisioning step is needed.
 
-The collection name defaults to `querynest_documents` (override with
-`QDRANT_COLLECTION`), and its vector size comes from `AZURE_EM_DIMENSIONS`
-(see the "Environment variables" table below) - `ensure_collection()` in
-`app/engine/qdrant_client.py` creates it automatically on first use with
-that size, so no manual collection setup is needed either way.
+The embedding column's size comes from `AZURE_EM_DIMENSIONS` (see the
+"Environment variables" table below) and is fixed at migration time (the
+migration's own `EMBEDDING_DIMENSIONS` constant) - `app/engine/vector_store.py`
+reads/writes this table via SQLAlchemy Core, using pgvector's
+`cosine_distance()` operator for retrieval (`ORDER BY embedding <=>
+:query_vector`), respecting `RAG_MIN_RELEVANCE_SCORE` the same way the
+old Qdrant `score_threshold` did.
+
+## File storage (Vercel Blob)
+
+Uploaded document originals (the raw file bytes a user attaches) are
+stored in [Vercel Blob](https://vercel.com/docs/storage/vercel-blob), not
+on local disk - a Vercel serverless function has no persistent/writable
+disk outside `/tmp`, so nothing written to a local path would survive
+past the current invocation. `app/engine/blob_storage.py` is a small
+internal client (there's no official Vercel Blob SDK for Python) built on
+`httpx`, talking to Blob's plain REST API directly:
+
+- `PUT https://blob.vercel-storage.com/{pathname}` to upload (the
+  pathname is `{user_id}/{document_id}/original.<ext>`, matching the old
+  local-disk layout)
+- `GET <the returned public url>` to download
+- `DELETE https://blob.vercel-storage.com` (URL(s) in the JSON body) to
+  delete
+
+Every request is authenticated with `Authorization: Bearer
+$BLOB_READ_WRITE_TOKEN` - the fixed env var name Vercel injects
+automatically once Blob storage is provisioned for the project (Storage
+tab → Blob → Connect to Project). There is no local-only equivalent -
+even docker-compose development needs a real token from a Vercel project
+with Blob storage provisioned for document upload to work; everything
+else in the app works fine without it.
+
+Text extraction (`app/engine/extraction.py`) already operates entirely on
+the in-memory `raw_bytes` a request reads from the upload (`io.BytesIO` /
+pymupdf's `stream=` parameter) rather than a filesystem path, so no
+`/tmp` staging step is needed for processing - only the original file's
+own copy in Blob storage (for later re-download/deletion) goes over the
+network.
 
 ## Environment variables
 
 All variables live in `.env` (gitignored) and are documented with blank
 placeholders in `.env.example`. Most of the backend reads them via
 `app/core/config.py` (a pydantic `Settings` model) - the exception is
-`app/engine/` (Azure OpenAI + Qdrant client construction), which reads
-`os.environ` directly rather than importing `Settings`, so that package
-has zero dependency on the rest of the app (see "Architecture" above).
-Either way, the values all still come from this one `.env` file -
-docker-compose's `env_file: .env` on the `backend` service exports every
-variable in it as a real process environment variable inside the
-container, so nothing needs to be duplicated between the two.
+`app/engine/` (Azure OpenAI, pgvector, and Vercel Blob client
+construction), which reads `os.environ` directly rather than importing
+`Settings`, so that package has zero dependency on the rest of the app
+(see "Architecture" above). Either way, the values all still come from
+this one `.env` file - docker-compose's `env_file: .env` on the `backend`
+service exports every variable in it as a real process environment
+variable inside the container, so nothing needs to be duplicated between
+the two.
 
 | Variable                          | Purpose                                                              | Required |
 |------------------------------------|-----------------------------------------------------------------------|------------------------|
-| `DATABASE_URL`                     | Postgres connection string used by SQLAlchemy/Alembic                 | Yes |
-| `QDRANT_URL`                       | Base URL of the Qdrant instance (local container or Qdrant Cloud)     | Yes |
-| `QDRANT_API_KEY`                   | API key for Qdrant Cloud (leave blank for the local docker-compose container, which has no auth) | Optional |
-| `QDRANT_COLLECTION`                | Name of the Qdrant collection documents are stored in                | Optional (defaults to `querynest_documents`) |
+| `DATABASE_URL`                     | Postgres connection string used by SQLAlchemy/Alembic - also holds the pgvector-backed `document_chunks` table (see "Vector search (pgvector)" above). Local: the docker-compose `pgvector/pgvector` Postgres. Deployed: the provisioned Vercel Postgres connection string. | Yes |
+| `BLOB_READ_WRITE_TOKEN`            | Vercel Blob auth token for uploaded document originals (see "File storage (Vercel Blob)" above) - the fixed name Vercel injects once Blob storage is provisioned for the project | Yes (for document upload/delete to work) |
+| `RAG_MIN_RELEVANCE_SCORE`          | Minimum cosine similarity for a retrieved chunk to be treated as relevant (see `app/engine/rag.py`) | Optional (defaults to `0.75`) |
 | `FRONTEND_URL`                     | Frontend origin - used to build password-reset email links | Yes |
 | `VITE_API_BASE_URL`                | Read by docker-compose as a **build arg** for the frontend image (Vite inlines `VITE_*` vars at build time, not at container runtime) - the URL the browser uses to reach the backend | Yes, for the docker-compose `frontend` build |
-| `STORAGE_DIR`                       | Where uploaded originals are written on disk, as `{STORAGE_DIR}/{user_id}/{document_id}/original.<ext>` (see `app/api/documents.py`) | Optional (defaults to `storage`, relative to the backend's working directory) |
 | `AZURE_EM_ENDPOINT`                 | Azure OpenAI resource endpoint used for embeddings                     | Optional (needed for document upload + chat) |
 | `AZURE_EM_API_KEY`                  | API key for the Azure OpenAI embeddings resource                      | Optional |
 | `AZURE_EM_API_VERSION`              | Azure OpenAI API version for the embeddings deployment                | Optional |
 | `AZURE_EM_MODEL`                    | Azure OpenAI embeddings deployment/model name                         | Optional |
-| `AZURE_EM_DIMENSIONS`               | Vector size the embedding deployment returns - sizes the Qdrant collection (`ensure_collection()` in `app/engine/qdrant_client.py`). Confirmed live for this project's deployment: 1536. | Optional (defaults to `1536` in code - `app/engine/azure_client.get_embedding_dimensions()`) |
+| `AZURE_EM_DIMENSIONS`               | Vector size the embedding deployment returns - must match the `document_chunks.embedding` column's size, fixed at migration time (see "Vector search (pgvector)" above). Confirmed live for this project's deployment: 1536. | Optional (defaults to `1536` in code - `app/engine/azure_client.get_embedding_dimensions()`) |
 | `LLM_ENDPOINT`                      | Azure OpenAI resource endpoint used for chat completions - only needed when `LLM_PROVIDER=azure` | Optional |
 | `LLM_ENDPOINT_APIKEY`               | API key for the Azure OpenAI chat resource - only needed when `LLM_PROVIDER=azure` | Optional |
 | `LLM_MODEL_NAME`                    | Azure OpenAI chat deployment/model name - only needed when `LLM_PROVIDER=azure` | Optional |
@@ -739,7 +814,7 @@ below follow the exact same pattern.
 |---|---|
 | `POST /api/chats/{chat_id}/documents` | multipart upload (`file`, one of `.pdf`/`.docx`/`.txt`/`.jpg`/`.jpeg`/`.png` - see "Document types supported" above) - saves the raw bytes, creates a `Document` row (`status=processing`), runs ingestion synchronously, and returns the row with its final `status` (`ready`/`failed`) + `error_message`. **404** if the chat isn't the caller's. **503** (`azure_ai_not_configured` - error code kept for backward compatibility) if the RAG stack (embeddings + the active chat provider) isn't configured. Never a 500 - unsupported file types and ingestion failures land as `status=failed` on the returned row. |
 | `GET /api/chats/{chat_id}/documents` | list documents for the chat, newest first |
-| `DELETE /api/chats/{chat_id}/documents/{document_id}` | deletes the `Document` row, its Qdrant points, and its `storage/` folder |
+| `DELETE /api/chats/{chat_id}/documents/{document_id}` | deletes the `Document` row, its `document_chunks` rows, and its Vercel Blob file |
 
 ### Document library endpoints (`/api/documents`)
 
@@ -752,7 +827,7 @@ library" above for what that changes about retrieval.
 |---|---|
 | `POST /api/documents` | multipart upload (`file`) - identical pipeline to the chat-scoped upload, but the resulting `Document` has no `chat_id`, so it's searchable from every chat this user owns (default `scope="all"`) rather than one specific chat. |
 | `GET /api/documents` | list this user's library documents (`chat_id IS NULL`), newest first - never includes chat-scoped documents. |
-| `DELETE /api/documents/{document_id}` | deletes a library document (its Qdrant points and `storage/` folder too). **404** if it belongs to another user, or if that `document_id` is actually a chat-scoped document. |
+| `DELETE /api/documents/{document_id}` | deletes a library document (its `document_chunks` rows and Vercel Blob file too). **404** if it belongs to another user, or if that `document_id` is actually a chat-scoped document. |
 
 ### Message endpoints (`/api/chats/{chat_id}/messages`)
 
@@ -823,9 +898,10 @@ speaker buttons are hidden (see `AppShellPage.tsx`).
 ### Verifying retrieval scope yourself
 
 This is the property the whole feature depends on, so it's worth checking
-directly rather than trusting the code - `backend/tests/test_qdrant_isolation.py`
-now exercises exactly this against a real (disposable) Qdrant collection
-as part of the automated suite (see "Running tests" below), but the manual
+directly rather than trusting the code - `backend/tests/test_vector_store_isolation.py`
+now exercises exactly this against a real (disposable) pgvector-enabled
+Postgres table as part of the automated suite (see "Running tests"
+below), but the manual
 walkthrough is still worth doing once yourself against the live app. There
 are two things to prove: default (`scope="all"`) retrieval correctly
 reaches across a user's own chats, and both modes correctly refuse to
@@ -849,18 +925,18 @@ cross into another user's data.
 4. For a lower-level check on any of the above, call
    `app/engine/rag.retrieve()` directly (a plain function, no HTTP
    needed) with the relevant `user_id`/`chat_id` combination and inspect
-   the returned chunks - this proves the Qdrant `must` filter itself is
+   the returned chunks - this proves the pgvector row filter itself is
    doing the work, not just that the LLM chose to follow its prompt
    instructions.
 
 ## Running tests
 
-`backend/tests/` holds the automated suite (106 tests) that replaced the
+`backend/tests/` holds the automated suite (116 tests) that replaced the
 purely-manual verification this project relied on through Phase 3:
 
 | File | Covers |
 |---|---|
-| `test_qdrant_isolation.py` | **The most important test file in this project** - `engine/qdrant_client.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) Qdrant collection: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, a `chat_id=None` "library" point (see "Document library" above) is found by the default scope alongside a chat document but excluded once a search narrows to one specific chat (while still respecting `user_id` isolation), and `delete_document()` only removes the targeted document's points. |
+| `test_vector_store_isolation.py` | **The most important test file in this project** - `engine/vector_store.py`'s `search()` isolation boundary, against a **real** (disposable, uniquely-named) pgvector-enabled Postgres table: a `user_id` mismatch returns nothing regardless of scope (including when `chat_id` *does* match, and when two different users happen to reuse the same numeric `chat_id`), default scope (`chat_id=None`) spans every chat a user owns, an explicit `chat_id` restricts to just that chat even when the query embedding is a closer match to another chat's document, a `chat_id=None` "library" row (see "Document library" above) is found by the default scope alongside a chat document but excluded once a search narrows to one specific chat (while still respecting `user_id` isolation), `delete_document()` only removes the targeted document's rows, re-ingesting a document overwrites its previous chunks via `ON CONFLICT` rather than accumulating duplicates, and a `score_threshold` excludes dissimilar rows. |
 | `test_chunking.py` | `engine/chunking.py` boundary cases - empty/whitespace-only pages, a page just under/at/over the split threshold, a page needing several chunks, a hard character-cut when a single paragraph has no boundary to split on, and `page_number`/`chunk_index` bookkeeping across multiple pages. |
 | `test_extraction.py` | `engine/extraction.py` against real fixture files (`tests/fixtures/sample.pdf`, `sample.txt`) - per-page PDF text via `pdfplumber`, TXT-as-a-single-page, invalid-UTF-8 handling, `UnsupportedFileTypeError` for an unrecognized/missing extension, and the **OCR fallback**: a page with real embedded text never invokes OCR, a page with empty/near-empty text triggers the EasyOCR/pymupdf fallback (both mocked - real OCR inference is far too slow for the automated suite), a mixed real-text/scanned document is decided per-page, and an image file is OCR'd directly. |
 | `test_llm_provider.py` | `engine/llm_provider.py`'s `LLM_PROVIDER` selection - defaults to `"groq"` for unset/blank/unrecognized values, case-insensitive `"azure"` detection, `chat_provider_configured()`/`get_active_chat_provider()` check/construct only the selected provider's client (never the other one's), with azure_client/groq_client's real client construction monkeypatched. |
@@ -883,33 +959,40 @@ are ORM-level `relationship(cascade=...)`, not DB triggers), so a fresh
 zero-setup SQLite schema per test is the simpler and equally correct
 choice - it is not a substitute for `alembic upgrade head` against real
 Postgres, which is exercised by actually running this project via
-docker-compose. `test_qdrant_isolation.py` is different: since Qdrant's
-filtering behavior is the single property this whole project depends on,
-those tests run against a real Qdrant instance rather than a mock.
+docker-compose. `test_vector_store_isolation.py` is different: since
+pgvector's filtering behavior is the single property this whole project
+depends on, those tests run against a real pgvector-enabled Postgres
+instance rather than a mock - and since `document_chunks` only exists
+once the pgvector migration has been run, that migration must be applied
+(`alembic upgrade head` - see "Vector search (pgvector)" above) against
+whichever database `test_vector_store_isolation.py` targets before running
+the suite.
 
 **Run the suite** inside the backend container (simplest - reuses the
-already-running docker-compose stack's network, so `test_qdrant_isolation.py`
-reaches Qdrant at its docker-compose service name with no extra
-configuration):
+already-running docker-compose stack's network, so
+`test_vector_store_isolation.py` reaches Postgres at its docker-compose
+service name with no extra configuration):
 
 ```bash
+docker-compose exec backend alembic upgrade head   # once, if not already run
 docker-compose exec backend pytest tests/ -v
 ```
 
-Or from the host, outside docker (point `QDRANT_TEST_URL` at the
-docker-compose-published port, since `qdrant` as a hostname only resolves
-inside the docker network):
+Or from the host, outside docker (point `VECTOR_TEST_DATABASE_URL` at the
+docker-compose-published port, since `postgres` as a hostname only
+resolves inside the docker network):
 
 ```bash
 cd backend
 pip install -r requirements.txt
-QDRANT_TEST_URL=http://localhost:6333 pytest tests/ -v
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest alembic upgrade head   # once
+VECTOR_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/querynest pytest tests/ -v
 ```
 
 Expected output ends with something like:
 
 ```
-======================== 106 passed, 7 warnings in ~20s ========================
+======================== 116 passed, 6 warnings in ~15s ========================
 ```
 
 (The warnings are pytest-asyncio/passlib deprecation notices unrelated to
@@ -926,6 +1009,76 @@ mostly network time, not CPU). Re-run
 `docker-compose build backend` and compare `docker images` if you want to
 confirm this on your own machine.
 
+## Vercel deployment
+
+This project deploys as **two Vercel projects** - the FastAPI backend as a
+Python serverless function, the React/Vite frontend as a static site -
+plus **one Vercel Postgres database** (holding both the relational tables
+and the pgvector-backed `document_chunks` table) and **one Vercel Blob
+store** (uploaded document originals). No AWS, no separate Qdrant
+Cloud/Neon account, and no Docker are needed to deploy.
+
+1. **Provision Vercel Postgres** (dashboard → Storage → Postgres → Create,
+   or `vercel storage create postgres`) and connect it to the backend
+   project - this sets `DATABASE_URL` (or `POSTGRES_URL`/`POSTGRES_PRISMA_URL`
+   depending on the integration; point `DATABASE_URL` at whichever
+   connection string it gives you) as a project environment variable.
+   Vercel Postgres is Neon-backed and supports the `vector` extension
+   natively - no separate vector-database step needed.
+2. **Provision Vercel Blob** (dashboard → Storage → Blob → Create) and
+   connect it to the backend project - this sets `BLOB_READ_WRITE_TOKEN`
+   automatically.
+3. **Run the pgvector migration once, out-of-band**, from your own
+   machine, against the provisioned `DATABASE_URL` - this is NOT run
+   automatically at deploy time or inside the serverless function (a
+   Vercel Python function has no business running DDL at import/cold-start
+   time, and every cold start would otherwise re-attempt it):
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   DATABASE_URL=<vercel-postgres-connection-string> alembic upgrade head
+   ```
+   Re-run this (still by hand, still out-of-band) after pulling any future
+   migration.
+4. **Set the remaining backend environment variables** in the Vercel
+   dashboard for the backend project - see the "Environment variables"
+   table above for the full list (`AZURE_EM_*`, a chat provider's vars,
+   `JWT_SECRET_KEY`, `FRONTEND_URL`, optionally `SMTP_*`/`GROQ_*`/
+   `RAG_MIN_RELEVANCE_SCORE`).
+5. **Deploy the backend** from `backend/` as its own Vercel project
+   (`backend/vercel.json` + `backend/api/index.py` are already set up so
+   Vercel's Python runtime picks up the FastAPI `app` object with no
+   further configuration) - this is the one-command step
+   (`vercel --prod` from `backend/`, or connect the repo in the
+   dashboard and point its root directory at `backend/`) left for
+   whoever has a Vercel account/token; nothing else in this repo needs to
+   change first.
+6. **Deploy the frontend** from `frontend/` as a second Vercel project
+   (Vercel's zero-config Vite preset handles the build;
+   `frontend/vercel.json`'s SPA rewrite makes direct navigation/refresh on
+   a client-side route like `/app` work). Set `VITE_API_BASE_URL` in the
+   Vercel dashboard for this project to the deployed backend project's
+   URL - it's a build-time value (Vite inlines `VITE_*` vars at build
+   time), so set it before the first deploy/redeploy after changing it.
+7. **CORS**: `app/main.py` currently allows `allow_origins=["*"]` (see
+   the Roadmap's Phase 8 note) - tighten this to the deployed frontend's
+   exact origin before treating this as a real production deployment.
+
+**Full list of environment variables the deployed app needs** (Vercel
+dashboard, backend project unless noted): `DATABASE_URL`,
+`BLOB_READ_WRITE_TOKEN`, `RAG_MIN_RELEVANCE_SCORE` (optional),
+`FRONTEND_URL`, `AZURE_EM_ENDPOINT`, `AZURE_EM_API_KEY`,
+`AZURE_EM_API_VERSION`, `AZURE_EM_MODEL`, `AZURE_EM_DIMENSIONS`
+(optional), `LLM_PROVIDER` (optional), `GROQ_API_KEY` /
+`GROQ_LLM_MODEL`/`GROQ_STT_MODEL`/`GROQ_TTS_MODEL`/`GROQ_TTS_VOICE` (for
+the `groq` chat provider and/or speech) or `LLM_ENDPOINT`/
+`LLM_ENDPOINT_APIKEY`/`LLM_MODEL_NAME`/`LLM_ENDPOINT_API_VERSION` (for
+the `azure` chat provider), `JWT_SECRET_KEY`, `JWT_ALGORITHM` (optional),
+`JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (optional),
+`JWT_REFRESH_TOKEN_EXPIRE_DAYS` (optional), `SMTP_HOST`/`SMTP_PORT`/
+`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM_EMAIL` (optional); and, on the
+**frontend** project: `VITE_API_BASE_URL`.
+
 ## Roadmap
 
 - **Phase 1:** repo scaffold, docker-compose, health/config endpoints.
@@ -933,10 +1086,11 @@ confirm this on your own machine.
   forgot-password via SMTP), chat/message history CRUD, and the frontend
   auth + chat-shell pages.
 - **Phase 3:** the `app/engine/` RAG package (extraction, chunking, Azure
-  OpenAI embeddings/chat, Qdrant storage/search with per-user isolation
-  and an opt-in per-chat retrieval scope), document upload/list/delete
-  endpoints, a streaming (SSE) message-send endpoint, and the frontend
-  upload widget + streaming chat input with a chat-scope checkbox.
+  OpenAI embeddings/chat, vector storage/search with per-user isolation
+  and an opt-in per-chat retrieval scope - originally Qdrant, migrated to
+  pgvector in Phase 9 below), document upload/list/delete endpoints, a
+  streaming (SSE) message-send endpoint, and the frontend upload widget +
+  streaming chat input with a chat-scope checkbox.
 - **Phase 4:** the automated test suite, real screenshots of the running
   app in this README, and a final documentation pass (this file).
 - **Phase 5:** OCR for images and scanned PDF pages (EasyOCR + pymupdf,
@@ -963,9 +1117,36 @@ confirm this on your own machine.
   format accordingly), and the account-level document library (see
   "Document library" above) - upload once, searchable from every chat,
   still strictly scoped to the uploading user.
-- **Phase 8 (not started):** production-shaped upgrades called out as
-  deliberate tradeoffs above - a background task queue for ingestion
-  instead of synchronous processing, and deployment configuration (this
-  project targets local docker-compose only; a real deployment would also
-  need CORS tightened from `allow_origins=["*"]`, HTTPS termination, and a
-  secrets manager instead of a `.env` file).
+- **Phase 8 (partially addressed by Phase 9 below):** production-shaped
+  upgrades called out as deliberate tradeoffs above - a background task
+  queue for ingestion instead of synchronous processing (still not
+  started - ingestion still runs synchronously inside the upload request,
+  now inside a Vercel serverless function's own execution-time limit
+  rather than a long-running container), and CORS tightened from
+  `allow_origins=["*"]` (still not started - still permissive; see
+  `app/main.py`).
+- **Phase 9 (this phase):** adapted the whole stack to deploy entirely on
+  Vercel's own products, with no AWS, no separate Qdrant Cloud/Neon
+  account, and no Docker required to deploy:
+  - **Qdrant → pgvector**: replaced the Qdrant vector store
+    (`app/engine/qdrant_client.py`) with pgvector on the SAME Postgres
+    database (`app/engine/vector_store.py` + a new Alembic migration -
+    see "Vector search (pgvector)" above) - Vercel Postgres (Neon-backed)
+    supports the `vector` extension natively, so there's no second
+    database/service to provision. `test_qdrant_isolation.py` was
+    replaced by `test_vector_store_isolation.py`, run against a real
+    pgvector-enabled Postgres instance, same as before.
+  - **Local disk → Vercel Blob**: replaced local-disk storage of uploaded
+    originals with Vercel Blob (`app/engine/blob_storage.py`, a small
+    `httpx`-based client - there's no official Python SDK) - a Vercel
+    serverless function has no persistent/writable disk outside `/tmp`.
+  - **Deployability**: added `backend/vercel.json` + `backend/api/index.py`
+    (re-exports `app.main:app` for Vercel's Python runtime, which
+    auto-detects an ASGI `app` object) and `frontend/vercel.json` (SPA
+    rewrite for client-side routes on refresh) - one Vercel project for
+    the static frontend, one for the Python backend. Alembic migrations
+    still run out-of-band, never at import/request time inside the
+    serverless function - see "Vector search (pgvector)" above.
+  - Local development is otherwise unchanged - docker-compose still runs
+    Postgres (now `pgvector/pgvector:pg16`) for local dev; Qdrant is gone
+    from `docker-compose.yml` entirely.

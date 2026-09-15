@@ -1,8 +1,9 @@
 """
 Retrieval + agentic streaming chat completion - the actual RAG logic.
 
-`retrieve()` embeds a question and searches Qdrant, always scoped to
-`user_id` and optionally also to `chat_id` - see qdrant_client.search() for
+`retrieve()` embeds a question and searches the pgvector-backed
+`document_chunks` table (app/engine/vector_store.py), always scoped to
+`user_id` and optionally also to `chat_id` - see vector_store.search() for
 the tenant-isolation filter this relies on. By default (`chat_id=None`)
 retrieval draws from every chat the calling user owns; passing a `chat_id`
 narrows it to just that one chat's uploads.
@@ -25,11 +26,11 @@ from openai import RateLimitError
 
 from app.engine.azure_client import get_embedding_client, get_embedding_config
 from app.engine.llm_provider import get_active_chat_provider, get_chat_model_chain
-from app.engine.qdrant_client import SearchResult, search
+from app.engine.vector_store import SearchResult, search
 
 DEFAULT_TOP_K = 5
 
-# Qdrant's search() returns its top-k nearest points regardless of how
+# vector_store.search() returns its top-k nearest rows regardless of how
 # semantically irrelevant they are, unless a score_threshold is passed -
 # without this, a chat with ANY document would always treat retrieval as
 # "found something" even for a completely unrelated question. Calibrated
@@ -37,7 +38,7 @@ DEFAULT_TOP_K = 5
 # relevant matches scored ~0.79-0.85, genuinely irrelevant ones ~0.71-0.72
 # (cosine similarity) - 0.75 cleanly separates them. This is RAG policy
 # (what counts as relevant enough to ground an answer in), so it lives
-# here rather than in qdrant_client.py's generic search() wrapper.
+# here rather than in vector_store.py's generic search() wrapper.
 MIN_RELEVANCE_SCORE = float(os.getenv("RAG_MIN_RELEVANCE_SCORE", "0.75"))
 
 # --- Agentic tool-calling path (stream_agentic_reply) -----------------------
@@ -153,7 +154,8 @@ def _history_messages(history: Optional[List[HistoryMessage]]) -> List[dict]:
 def retrieve(
     query: str, user_id: int, chat_id: Optional[int] = None, top_k: int = DEFAULT_TOP_K
 ) -> List[SearchResult]:
-    """Embed `query` and search Qdrant, always scoped to `user_id`. Pass
+    """Embed `query` and search the pgvector-backed document_chunks table,
+    always scoped to `user_id`. Pass
     `chat_id` to additionally restrict retrieval to just that chat's
     uploads; leave it `None` (the default) to search across every chat the
     user owns."""

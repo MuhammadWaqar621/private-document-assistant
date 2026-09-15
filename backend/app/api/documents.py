@@ -13,9 +13,9 @@ upload/ingest pipeline (`_save_and_ingest()` below):
   app/models/document.py's module docstring for the isolation reasoning.
 
 Both are one of the two places (with app/api/messages.py) that touch both
-the DB/auth stack and app/engine/* - they check auth/ownership, save the
-raw upload to local disk, call the plain engine ingestion function, and
-persist the resulting status. Ingestion runs synchronously inside the
+the DB/auth stack and app/engine/* - they check auth/ownership, upload the
+raw bytes to Vercel Blob storage, call the plain engine ingestion function,
+and persist the resulting status. Ingestion runs synchronously inside the
 request for this portfolio project's scope: on success the Document row
 becomes status=ready, on failure status=failed + error_message, but the
 request itself never crashes either way. A production deployment would
@@ -23,10 +23,7 @@ instead hand this off to a background worker (Celery/RQ/arq) and let the
 client poll for status - see README.md's "Synchronous ingestion" tradeoff.
 """
 
-import os
-import shutil
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -36,21 +33,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.engine.azure_client import azure_ai_configured
+from app.engine.blob_storage import BlobStorageError, delete_blob, upload_blob
 from app.engine.ingestion import ingest_document
 from app.engine.llm_provider import get_llm_provider_name
-from app.engine.qdrant_client import delete_document as qdrant_delete_document
+from app.engine.vector_store import delete_document as delete_document_vectors
 from app.models import Chat, Document, DocumentStatus, User
 
 router = APIRouter(prefix="/api/chats/{chat_id}/documents", tags=["documents"])
 library_router = APIRouter(prefix="/api/documents", tags=["documents"])
 
-# Where uploaded originals live on disk: storage/{user_id}/{document_id}/original.<ext>
-# "storage" is gitignored (see .gitignore) and, under docker-compose, lives
-# inside the bind-mounted ./backend directory so it survives container
-# restarts without a dedicated volume.
-STORAGE_ROOT = Path(os.getenv("STORAGE_DIR", "storage"))
-
-# The on-disk extension is chosen from this fixed allow-list, never taken
+# The blob pathname is chosen from this fixed allow-list, never taken
 # verbatim from the client-supplied filename - a filename like
 # "x.txt/../../../etc/whatever" would otherwise let its "extension"
 # (everything after the last ".") inject path separators/".." segments
@@ -125,13 +117,19 @@ def _azure_not_configured_error() -> HTTPException:
 async def _save_and_ingest(
     db: Session, user: User, file: UploadFile, chat_id: Optional[int]
 ) -> Document:
-    """Save the upload to disk, create the Document row, and run ingestion
-    synchronously - shared by both the chat-scoped and account-level
-    library upload endpoints below. `chat_id=None` for a library upload;
-    everything else (extraction, chunking, embedding, Qdrant upsert,
-    supported file types) is identical for both - a library document goes
-    through the exact same app/engine/extraction.py pipeline (PDF, DOCX,
-    TXT, and OCR'd images), it's just not associated with one chat."""
+    """Upload the raw bytes to Vercel Blob storage, create the Document
+    row, and run ingestion synchronously - shared by both the chat-scoped
+    and account-level library upload endpoints below. `chat_id=None` for a
+    library upload; everything else (extraction, chunking, embedding,
+    vector-store upsert, supported file types) is identical for both - a
+    library document goes through the exact same app/engine/extraction.py
+    pipeline (PDF, DOCX, TXT, and OCR'd images), it's just not associated
+    with one chat.
+
+    Ingestion itself (app/engine/extraction.py onward) operates entirely
+    on the in-memory `raw_bytes` already read below - no local/temp file
+    is needed for processing, only the original upload's own copy in Blob
+    storage (for later re-download/deletion)."""
     if not azure_ai_configured():
         raise _azure_not_configured_error()
 
@@ -151,12 +149,18 @@ async def _save_and_ingest(
 
     raw_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     ext = raw_ext if raw_ext in ALLOWED_EXTENSIONS else "bin"
-    doc_dir = STORAGE_ROOT / str(user.id) / str(document.id)
-    doc_dir.mkdir(parents=True, exist_ok=True)
-    storage_path = doc_dir / f"original.{ext}"
-    storage_path.write_bytes(raw_bytes)
+    pathname = f"{user.id}/{document.id}/original.{ext}"
 
-    document.storage_path = str(storage_path)
+    try:
+        uploaded = upload_blob(pathname, raw_bytes, content_type=file.content_type)
+    except BlobStorageError as exc:
+        document.status = DocumentStatus.failed
+        document.error_message = f"Failed to store uploaded file: {exc}"
+        db.commit()
+        db.refresh(document)
+        return document
+
+    document.storage_path = uploaded.url
     db.commit()
 
     result = ingest_document(
@@ -210,12 +214,15 @@ def list_documents(
 
 def _delete_document(db: Session, document: Document) -> None:
     try:
-        qdrant_delete_document(document.id)
-    except Exception:  # noqa: BLE001 - a Qdrant hiccup shouldn't block deleting the DB row
+        delete_document_vectors(document.id)
+    except Exception:  # noqa: BLE001 - a vector-store hiccup shouldn't block deleting the DB row
         pass
 
     if document.storage_path:
-        shutil.rmtree(Path(document.storage_path).parent, ignore_errors=True)
+        try:
+            delete_blob(document.storage_path)
+        except Exception:  # noqa: BLE001 - a Blob hiccup shouldn't block deleting the DB row
+            pass
 
     db.delete(document)
     db.commit()
@@ -238,7 +245,7 @@ def delete_document(
 # Uploaded via POST /api/documents (no chat_id in the URL or payload) -
 # automatically searchable from every chat the user owns via the default
 # scope="all" retrieval (app/engine/rag.py's retrieve()/stream_agentic_reply()
-# pass chat_id=None in that mode, and qdrant_client.search() only filters
+# pass chat_id=None in that mode, and vector_store.search() only filters
 # on chat_id when one is explicitly given), while remaining invisible to
 # every other user, and excluded from a scope="chat"-narrowed search - see
 # app/models/document.py's module docstring.
