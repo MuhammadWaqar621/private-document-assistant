@@ -56,6 +56,12 @@ class UnsupportedFileTypeError(ValueError):
     """Raised when extract_pages() is given a file type it can't handle."""
 
 
+_OCR_UNAVAILABLE_MESSAGE = (
+    "[OCR unavailable in this deployment - this page/image has no "
+    "extractable text. See requirements.txt for details.]"
+)
+
+
 def extract_pages(raw_bytes: bytes, filename: str) -> List[PageText]:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
@@ -78,8 +84,13 @@ def extract_pages(raw_bytes: bytes, filename: str) -> List[PageText]:
 def _get_ocr_reader():
     """Construct the EasyOCR Reader exactly once (loading its model
     weights is expensive) rather than per call. CPU-only (gpu=False),
-    matching the CPU-only torch install in requirements.txt."""
-    import easyocr
+    matching the CPU-only torch install in requirements.txt. Returns None
+    if easyocr isn't installed (e.g. the Vercel deployment, which omits it
+    to stay under the function bundle size limit - see requirements.txt)."""
+    try:
+        import easyocr
+    except ImportError:
+        return None
 
     return easyocr.Reader(["en"], gpu=False)
 
@@ -87,8 +98,11 @@ def _get_ocr_reader():
 def _ocr_image_bytes(image_bytes: bytes) -> str:
     """Run EasyOCR against raw image bytes (anything Pillow/OpenCV can
     decode - JPEG, PNG, or a PDF page rendered to PNG) and join the
-    detected text fragments into one string, in reading order."""
+    detected text fragments into one string, in reading order. Falls back
+    to a placeholder message when OCR isn't installed in this deployment."""
     reader = _get_ocr_reader()
+    if reader is None:
+        return _OCR_UNAVAILABLE_MESSAGE
     fragments = reader.readtext(image_bytes, detail=0, paragraph=True)
     return "\n".join(fragments)
 
